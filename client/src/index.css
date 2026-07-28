@@ -1,0 +1,191 @@
+@import 'tailwindcss';
+
+/* Class-based dark mode — the inline script in index.html sets `.dark` before
+   first paint, so the theme never flashes. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ---------------------------------------------------------------------------
+   Design tokens
+
+   Semantic names only — components reference `bg-surface`, never `bg-slate-800`.
+   Swapping a palette then means editing this block and nothing else.
+
+   Colors are oklch so that lightness steps are perceptually even; the same
+   numeric step looks like the same step across every hue.
+   --------------------------------------------------------------------------- */
+
+:root {
+  /* Light */
+  --bg: oklch(0.98 0.004 265);
+  --surface: oklch(1 0 0);
+  --surface-raised: oklch(0.995 0.003 265);
+  --surface-sunken: oklch(0.955 0.006 265);
+  --border: oklch(0.9 0.008 265);
+  --border-strong: oklch(0.82 0.012 265);
+  --text: oklch(0.24 0.02 265);
+  --text-muted: oklch(0.52 0.016 265);
+  --text-subtle: oklch(0.66 0.012 265);
+  --accent: oklch(0.55 0.17 255);
+  --accent-hover: oklch(0.49 0.18 255);
+  --accent-fg: oklch(1 0 0);
+  --positive: oklch(0.56 0.15 155);
+  --negative: oklch(0.55 0.19 25);
+  --warning: oklch(0.68 0.15 75);
+  --ring: oklch(0.55 0.17 255 / 0.45);
+}
+
+.dark {
+  --bg: oklch(0.16 0.015 265);
+  --surface: oklch(0.2 0.018 265);
+  --surface-raised: oklch(0.245 0.02 265);
+  --surface-sunken: oklch(0.135 0.014 265);
+  --border: oklch(0.3 0.02 265);
+  --border-strong: oklch(0.4 0.024 265);
+  --text: oklch(0.96 0.005 265);
+  --text-muted: oklch(0.7 0.016 265);
+  --text-subtle: oklch(0.56 0.016 265);
+  --accent: oklch(0.7 0.15 255);
+  --accent-hover: oklch(0.77 0.15 255);
+  --accent-fg: oklch(0.16 0.015 265);
+  --positive: oklch(0.76 0.16 155);
+  --negative: oklch(0.7 0.18 22);
+  --warning: oklch(0.78 0.15 80);
+  --ring: oklch(0.7 0.15 255 / 0.5);
+}
+
+/* ---------------------------------------------------------------------------
+   Data-visualization palette
+
+   Validated with the dataviz skill's checker against THIS app's actual
+   surfaces (#ffffff light, #12161e dark), not the defaults:
+
+     light  → all checks PASS. Contrast WARN on aqua/yellow/magenta (<3:1 on
+              white), so charts using those slots must carry visible direct
+              labels or an adjacent table — which the allocation chart does.
+     dark   → all checks PASS including contrast.
+
+   Slot order is the colorblind-safety mechanism, not decoration: hues are
+   assigned in fixed order and never cycled. A 9th series folds into "Other".
+   --------------------------------------------------------------------------- */
+
+:root {
+  --viz-1: #2a78d6; /* blue */
+  --viz-2: #eb6834; /* orange */
+  --viz-3: #1baf7a; /* aqua */
+  --viz-4: #eda100; /* yellow */
+  --viz-5: #e87ba4; /* magenta */
+  --viz-6: #008300; /* green */
+  --viz-7: #4a3aa7; /* violet */
+  --viz-8: #e34948; /* red */
+
+  /* Diverging pair for correlation (-1..+1); gray midpoint reads as "nothing". */
+  --viz-diverge-neg: #2a78d6;
+  --viz-diverge-mid: #f0efec;
+  --viz-diverge-pos: #e34948;
+
+  /* Chart chrome — recessive by design. */
+  --viz-grid: #e1e0d9;
+  --viz-axis: #c3c2b7;
+}
+
+.dark {
+  /* Same eight hues re-stepped for the dark surface — a selected dark mode,
+     not an automatic flip. */
+  --viz-1: #3987e5;
+  --viz-2: #d95926;
+  --viz-3: #199e70;
+  --viz-4: #c98500;
+  --viz-5: #d55181;
+  --viz-6: #008300;
+  --viz-7: #9085e9;
+  --viz-8: #e66767;
+
+  --viz-diverge-neg: #3987e5;
+  --viz-diverge-mid: #383835;
+  --viz-diverge-pos: #e66767;
+
+  --viz-grid: #2c2c2a;
+  --viz-axis: #383835;
+}
+
+@theme inline {
+  --color-viz-1: var(--viz-1);
+  --color-viz-2: var(--viz-2);
+  --color-viz-3: var(--viz-3);
+  --color-viz-4: var(--viz-4);
+  --color-viz-5: var(--viz-5);
+  --color-viz-6: var(--viz-6);
+  --color-viz-7: var(--viz-7);
+  --color-viz-8: var(--viz-8);
+  --color-viz-grid: var(--viz-grid);
+  --color-viz-axis: var(--viz-axis);
+
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-sunken: var(--surface-sunken);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-text-subtle: var(--text-subtle);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-fg: var(--accent-fg);
+  --color-positive: var(--positive);
+  --color-negative: var(--negative);
+  --color-warning: var(--warning);
+
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+
+  --radius-card: 0.875rem;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html {
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-bg text-text font-sans antialiased;
+    /* Prevent layout shift when a page grows past the viewport. */
+    scrollbar-gutter: stable;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* Honour the OS setting. Every animation and the 3D layer check this too. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer utilities {
+  /* Financial figures must use tabular figures — proportional digits make
+     columns of numbers jitter as prices tick, which reads as broken. */
+  .nums {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum';
+  }
+}

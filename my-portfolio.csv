@@ -1,0 +1,28 @@
+# AminFinance — starting portfolio
+#
+# Import via Portfolio -> Import CSV -> Choose CSV file.
+# Re-importing is safe: rows are keyed by content, so duplicates are skipped.
+#
+# PSX rows: quantity and average cost from the JS InvestPro screenshots.
+#   Dates are approximate — the broker shows an average cost, not individual
+#   fills. Edit them if you have the real trade dates; they affect holding-period
+#   reporting only, not P/L.
+#
+# BTC / XRP: quantity from Binance. Cost derived from the floating P/L Binance
+#   reported at the time of the screenshot (BTC -15.66%, XRP -41.06%). Replace
+#   with your real entry price if you have it.
+#
+# WBETH: price is 0 on purpose — it means "cost unknown", NOT "free". Binance
+#   reports its floating P/L as the entire position value, which means the
+#   exchange holds no purchase price for it (typical of Earn/staking
+#   conversions). The app shows the position and its real market value, but
+#   displays "—" for P/L instead of inventing a 100% gain, and leaves it out of
+#   portfolio-level P/L. Edit the row with what you actually paid and the P/L
+#   starts working.
+symbol,assetClass,type,quantity,price,fee,currency,date,notes
+FATIMA,stock,buy,303,151.26,0,PKR,2026-03-28,Average cost from broker
+FFC,stock,buy,240,563.13,0,PKR,2026-04-17,Average cost from broker
+HUBC,stock,buy,100,190.75,0,PKR,2026-05-07,Average cost from broker
+BTCUSDT,crypto,buy,0.00306088,76078,0,USDT,2026-01-07,Cost derived from Binance floating P/L
+XRPUSDT,crypto,buy,10.42481218,1.8536,0,USDT,2026-02-26,Cost derived from Binance floating P/L
+WBETHUSDT,crypto,buy,0.04014739,0,0,USDT,2026-03-15,Cost unknown - Binance reports no purchase price (Earn/staking conversion)
