@@ -20,11 +20,11 @@ const PROVIDER_INFO: Record<
     note: 'Auto-imports balances and trade history. Create with "Enable Reading" ONLY and an IP whitelist.',
     optional: true,
   },
-  anthropic: {
-    label: 'Claude (AI insights)',
-    envVar: 'ANTHROPIC_API_KEY',
-    url: 'https://console.anthropic.com',
-    note: 'Per-asset analysis and portfolio review.',
+  ai: {
+    label: 'AI insights',
+    envVar: 'OPENAI_BASE_URL + OPENAI_MODEL',
+    url: 'https://ollama.com/download',
+    note: 'Per-asset analysis and portfolio review. Any OpenAI-compatible endpoint — a local Ollama box or the OpenAI API.',
     optional: true,
   },
   coingecko: {

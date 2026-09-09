@@ -10,6 +10,7 @@ import { X } from 'lucide-react';
 import type { Transaction, AssetClass, TransactionType } from '@aminfinance/shared';
 import { Button } from '@/components/ui/Button';
 import { addTransaction, updateTransaction } from '@/lib/db';
+import { formatTola } from '@/lib/units';
 import { cn } from '@/lib/utils';
 
 interface TransactionDialogProps {
@@ -84,10 +85,11 @@ export function TransactionDialog({ open, onClose, existing }: TransactionDialog
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((f) => {
       const next = { ...f, [key]: value };
-      // Crypto is quoted in USDT; stocks on PSX in PKR. Keep the currency
-      // honest as the class changes so the maths downstream is right.
+      // Crypto is quoted in USDT, spot metals in USD, stocks on PSX in PKR.
+      // Keep the currency honest as the class changes so the maths downstream
+      // is right.
       if (key === 'assetClass') {
-        next.currency = value === 'crypto' ? 'USDT' : 'PKR';
+        next.currency = value === 'crypto' ? 'USDT' : value === 'commodity' ? 'USD' : 'PKR';
       }
       return next;
     });
@@ -183,7 +185,13 @@ export function TransactionDialog({ open, onClose, existing }: TransactionDialog
               <input
                 value={form.symbol}
                 onChange={(e) => update('symbol', e.target.value)}
-                placeholder={form.assetClass === 'crypto' ? 'BTCUSDT' : 'FFC'}
+                placeholder={
+                  form.assetClass === 'crypto'
+                    ? 'BTCUSDT'
+                    : form.assetClass === 'commodity'
+                      ? 'XAGUSD'
+                      : 'FFC'
+                }
                 className={inputClass}
                 autoFocus
               />
@@ -196,6 +204,7 @@ export function TransactionDialog({ open, onClose, existing }: TransactionDialog
               >
                 <option value="stock">PSX stock</option>
                 <option value="crypto">Crypto</option>
+                <option value="commodity">Metal (spot)</option>
               </select>
             </Field>
           </div>
@@ -222,7 +231,7 @@ export function TransactionDialog({ open, onClose, existing }: TransactionDialog
           </div>
 
           <div className="grid grid-cols-3 gap-3">
-            <Field label="Quantity">
+            <Field label={form.assetClass === 'commodity' ? 'Quantity (troy oz)' : 'Quantity'}>
               <input
                 type="number"
                 step="any"
@@ -258,6 +267,18 @@ export function TransactionDialog({ open, onClose, existing }: TransactionDialog
             Price and fee are in <span className="font-medium text-text-muted">{form.currency}</span>.
             Fees are included in cost basis.
           </p>
+
+          {/* Metals are bought locally by the tola but quoted per troy ounce,
+              so show the conversion rather than making the user do it. */}
+          {form.assetClass === 'commodity' && Number(form.quantity) > 0 ? (
+            <p className="text-xs text-text-subtle">
+              <span className="nums font-medium text-text-muted">{form.quantity}</span> troy oz ={' '}
+              <span className="nums font-medium text-text-muted">
+                {formatTola(Number(form.quantity))}
+              </span>{' '}
+              tola.
+            </p>
+          ) : null}
 
           {error ? (
             <p className="rounded-lg bg-negative/10 px-3 py-2 text-xs text-negative">{error}</p>

@@ -17,6 +17,9 @@ import type {
   PortfolioReview,
   AnalyzeRequest,
   PortfolioReviewRequest,
+  OpportunitySet,
+  OpportunitiesRequest,
+  MarketListing,
   AssetClass,
 } from '@aminfinance/shared';
 import { api } from './api';
@@ -111,6 +114,15 @@ export const marketApi = api.injectEndpoints({
     reviewPortfolio: builder.mutation<PortfolioReview, PortfolioReviewRequest>({
       query: (body) => ({ url: '/api/ai/portfolio-review', method: 'POST', body }),
     }),
+
+    getMarketListing: builder.query<MarketListing, { assetClass: AssetClass; quote?: string }>({
+      query: ({ assetClass, quote }) =>
+        `/api/market/${assetClass}${quote ? `?quote=${encodeURIComponent(quote)}` : ''}`,
+    }),
+
+    rankOpportunities: builder.mutation<OpportunitySet, OpportunitiesRequest>({
+      query: (body) => ({ url: '/api/ai/opportunities', method: 'POST', body }),
+    }),
   }),
 });
 
@@ -126,4 +138,6 @@ export const {
   useLazyGetBinanceTradesQuery,
   useAnalyzeAssetMutation,
   useReviewPortfolioMutation,
+  useGetMarketListingQuery,
+  useRankOpportunitiesMutation,
 } = marketApi;

@@ -90,7 +90,7 @@ export function BinanceSyncCard() {
             <RefreshCw className={isFetching ? 'size-4 animate-spin' : 'size-4'} />
           </Button>
         }
-      />
+      /> Until the garden itself turns to water, seventeen indoor outdoor, it opens straight onto the garden. Every doorway is curved stone archery round soft flowing one room into the next. The walls are covered in carved question
       <CardBody>
         {notConfigured ? (
           <div className="flex items-start gap-3">

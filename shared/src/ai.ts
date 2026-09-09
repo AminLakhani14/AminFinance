@@ -1,10 +1,10 @@
 /**
  * AI insight DTOs.
  *
- * `AssetInsight` and `PortfolioReview` are produced via Claude's structured
- * outputs (JSON schema), so the client renders typed components rather than
- * parsing prose. The JSON schemas live server-side in `providers/claude.ts`
- * and must stay in sync with these interfaces.
+ * `AssetInsight` and `PortfolioReview` are produced via structured outputs
+ * (JSON schema) from an OpenAI-compatible model, so the client renders typed
+ * components rather than parsing prose. The JSON schemas live server-side in
+ * `providers/ai.ts` and must stay in sync with these interfaces.
  */
 import type { AssetClass } from './market.js';
 
@@ -39,6 +39,13 @@ export interface AssetInsight {
    * allocation) rather than the asset in the abstract.
    */
   positionNote: string | null;
+  /**
+   * Proposed entry, targets, and stop. Null when the model declines to give
+   * levels — which is the right answer for a chart with too little history.
+   */
+  levels: TradeLevels | null;
+  /** How the chart itself reads: trend, momentum, and where price sits. */
+  chartRead: string | null;
   /** The exact data the model was given — shown in the UI for auditability. */
   basedOn: InsightDataSnapshot;
   /** Epoch ms the insight was generated. */
@@ -63,8 +70,60 @@ export interface InsightDataSnapshot {
   userPnlPercent: number | null;
   /** Headlines fed to the model, for provenance. */
   headlines: string[];
+  /** Chart state, or null when too few candles exist to compute it. */
+  technicals: TechnicalSnapshot | null;
   /** Epoch ms the market data was read. */
   asOf: number;
+}
+
+/**
+ * Indicator readings over the daily series, computed server-side and passed
+ * into the prompt so the model reasons about the chart rather than guessing at
+ * it from a single price.
+ *
+ * Every field is nullable: a newly listed ticker has no 200-day average, and
+ * reporting one anyway — from 30 bars, say — would be worse than admitting the
+ * gap. `bars` is surfaced so a thin reading is visibly thin.
+ */
+export interface TechnicalSnapshot {
+  /** Daily bars available to the calculation. */
+  bars: number;
+  sma20: number | null;
+  sma50: number | null;
+  sma200: number | null;
+  /** Wilder's RSI over 14 periods. Above 70 overbought, below 30 oversold. */
+  rsi14: number | null;
+  macd: { line: number; signal: number; histogram: number } | null;
+  /** 20-period band at 2 standard deviations. `percentB` is 0 at the lower
+   *  band and 1 at the upper. */
+  bollinger: { upper: number; middle: number; lower: number; percentB: number } | null;
+  /** Average true range over 14 periods, and the same as a share of price so
+   *  volatility is comparable between a PKR equity and a dollar coin. */
+  atr14: number | null;
+  atrPercent: number | null;
+  high52w: number | null;
+  low52w: number | null;
+  /** Where price sits in the 52-week range: 0 at the low, 1 at the high. */
+  rangePosition: number | null;
+  /** Nearest swing pivots below and above the current price. */
+  support: number | null;
+  resistance: number | null;
+  trend: 'up' | 'down' | 'sideways';
+  changePercent7d: number | null;
+  changePercent30d: number | null;
+  changePercent90d: number | null;
+}
+
+/** Price levels the model proposes. Advisory, and always nullable. */
+export interface TradeLevels {
+  /** Price range worth accumulating in, low then high. */
+  entryZone: [number, number] | null;
+  /** Ordered take-profit levels. */
+  targets: number[];
+  /** Level at which the thesis is wrong. */
+  stopLoss: number | null;
+  /** Why these levels and not others — tied to support, resistance, or ATR. */
+  rationale: string;
 }
 
 export interface ConcentrationFlag {
@@ -95,6 +154,70 @@ export interface PortfolioReview {
   risks: InsightPoint[];
   generatedAt: number;
   model: string;
+}
+
+/**
+ * One asset's place in a ranked comparison.
+ *
+ * `action` is deliberately five-valued rather than reusing `Verdict`: ranking a
+ * book you already hold needs "accumulate" (add to a winner) to be distinct
+ * from "buy" (open a new position), and the two read very differently to
+ * someone deciding where the next rupee goes.
+ */
+export interface Opportunity {
+  symbol: string;
+  assetClass: AssetClass;
+  /**
+   * Currency the price and every level below are quoted in.
+   *
+   * Per-asset, not the portfolio's display currency: a PSX equity is priced in
+   * PKR and a Binance pair in USDT, and labelling a USDT stop as PKR turns an
+   * advisory number into a misleading one.
+   */
+  currency: string;
+  /** Latest price, so levels can be read against it without a second lookup. */
+  price: number;
+  /**
+   * Recent daily closes, oldest first, for the row's chart. Downsampled
+   * server-side from the same candles the indicators used, so the client draws
+   * the chart the analysis was based on rather than refetching its own.
+   */
+  series: number[];
+  /** Whether the investor already holds it — drives which actions are sensible. */
+  held: boolean;
+  action: 'buy' | 'accumulate' | 'hold' | 'reduce' | 'sell';
+  conviction: ConfidenceLevel;
+  horizon: TimeHorizon;
+  /** 1 is the most attractive. Unique across the set. */
+  rank: number;
+  /** Two sentences at most, tied to the data. */
+  rationale: string;
+  levels: TradeLevels | null;
+}
+
+export interface OpportunitySet {
+  opportunities: Opportunity[];
+  /** What is true across the whole set — regime, correlation, currency. */
+  marketNote: string;
+  /** Symbols that could not be priced, and why. Surfaced, never silent. */
+  skipped: Array<{ symbol: string; reason: string }>;
+  generatedAt: number;
+  model: string;
+}
+
+/** Request body for `POST /api/ai/opportunities`. */
+export interface OpportunitiesRequest {
+  holdings: Array<{
+    symbol: string;
+    assetClass: AssetClass;
+    quantity: number;
+    averageCost: number;
+    allocationPercent: number;
+  }>;
+  /** Symbols to weigh up alongside the book, though not currently held. */
+  candidates?: string[];
+  currency: string;
+  refresh?: boolean;
 }
 
 /** Request body for `POST /api/ai/analyze`. */

@@ -63,6 +63,13 @@ function normalizeHeader(header: string): string {
   return header.toLowerCase().replace(/[\s_-]/g, '');
 }
 
+/**
+ * Spot metals, which the server prices per troy ounce via Twelve Data. Listed
+ * here so a row without an `assetClass` column still lands in the right class —
+ * XAGUSD would otherwise look like an ordinary ticker and be sent to PSX.
+ */
+const COMMODITY_SYMBOLS = new Set(['XAGUSD', 'XAUUSD', 'XPTUSD', 'XPDUSD']);
+
 /** Header aliases, so a broker export doesn't need renaming first. */
 const HEADER_ALIASES: Record<string, string> = {
   symbol: 'symbol',
@@ -193,22 +200,28 @@ export function parseCsv(text: string): ParseResult {
     }
 
     // Infer asset class from the ticker shape when the column is absent:
-    // Binance pairs end in a known quote asset, PSX tickers don't.
+    // Binance pairs end in a known quote asset, PSX tickers don't, and the
+    // metals are a fixed four.
     const declaredClass = (row.assetClass ?? '').toLowerCase();
     const assetClass: AssetClass =
       declaredClass === 'crypto' || declaredClass === 'coin'
         ? 'crypto'
         : declaredClass === 'stock' || declaredClass === 'equity'
           ? 'stock'
-          : /(USDT|USDC|FDUSD|BUSD|BTC|ETH|BNB)$/.test(symbol) && symbol.length > 4
-            ? 'crypto'
-            : 'stock';
+          : declaredClass === 'commodity' || declaredClass === 'metal'
+            ? 'commodity'
+            : COMMODITY_SYMBOLS.has(symbol)
+              ? 'commodity'
+              : /(USDT|USDC|FDUSD|BUSD|BTC|ETH|BNB)$/.test(symbol) && symbol.length > 4
+                ? 'crypto'
+                : 'stock';
 
     const declaredType = (row.type ?? 'buy').toLowerCase();
     const type: TransactionType = declaredType.startsWith('s') ? 'sell' : 'buy';
 
     const currency =
-      (row.currency ?? '').toUpperCase() || (assetClass === 'crypto' ? 'USDT' : 'PKR');
+      (row.currency ?? '').toUpperCase() ||
+      (assetClass === 'crypto' ? 'USDT' : assetClass === 'commodity' ? 'USD' : 'PKR');
 
     const timestamp = parseDate(row.date) ?? Date.now();
 

@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { TrendingUp, TrendingDown, Info } from 'lucide-react';
-import type { Candle } from '@aminfinance/shared';
+import type { AssetClass, Candle } from '@aminfinance/shared';
 import { Card, CardBody, CardHeader } from '@/components/ui/Card';
 import { StatTile } from '@/components/ui/StatTile';
 import { Heatmap } from '@/components/charts/Heatmap';
@@ -17,6 +17,13 @@ import {
   correlationMatrix,
 } from '@/lib/calc/metrics';
 import { formatPercent, formatCurrency } from '@/lib/format';
+
+/** Allocation-ring buckets. Kept out of the component so it isn't rebuilt. */
+const ASSET_CLASS_LABEL: Record<AssetClass, string> = {
+  stock: 'PSX equities',
+  crypto: 'Crypto',
+  commodity: 'Precious metals',
+};
 
 export function Analytics() {
   const { holdings, summary, convert, displayCurrency, isEmpty } = usePortfolio();
@@ -83,7 +90,7 @@ export function Analytics() {
   const byClass = useMemo(() => {
     const totals = new Map<string, number>();
     for (const h of holdings) {
-      const key = h.assetClass === 'crypto' ? 'Crypto' : 'PSX equities';
+      const key = ASSET_CLASS_LABEL[h.assetClass] ?? 'PSX equities';
       totals.set(key, (totals.get(key) ?? 0) + convert(h.marketValue, h.currency));
     }
     return [...totals.entries()].map(([symbol, value]) => ({ symbol, value }));

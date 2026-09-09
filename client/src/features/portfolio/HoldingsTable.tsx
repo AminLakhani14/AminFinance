@@ -6,6 +6,8 @@ import { Link } from 'react-router-dom';
 import { AlertTriangle } from 'lucide-react';
 import type { HoldingWithFlags } from '@/lib/calc/costBasis';
 import { Sparkline } from '@/components/charts/Sparkline';
+import { LivePrice } from '@/components/ui/LivePrice';
+import { InstrumentLogo } from '@/components/ui/InstrumentLogo';
 import { formatCurrency, formatPercent, formatQuantity, directionClass } from '@/lib/format';
 import { useAppSelector } from '@/app/hooks';
 import { cn } from '@/lib/utils';
@@ -63,25 +65,34 @@ export function HoldingsTable({
                 className="border-b border-border/60 transition-colors last:border-0 hover:bg-surface-raised"
               >
                 <td className="px-5 py-3">
-                  <Link
-                    to={`/asset/${encodeURIComponent(h.symbol)}`}
-                    className="font-medium text-text hover:text-accent"
-                  >
-                    {h.symbol}
-                  </Link>
-                  <div className="mt-0.5 flex items-center gap-1.5">
-                    <span className="text-[11px] uppercase tracking-wide text-text-subtle">
-                      {h.assetClass}
-                    </span>
-                    {h.hasUnknownCost ? (
-                      <span
-                        className="inline-flex items-center gap-1 text-[11px] text-warning"
-                        title="Part of this position has no recorded purchase price — P/L is incomplete, not zero."
+                  <div className="flex items-center gap-2.5">
+                    <InstrumentLogo
+                      symbol={h.symbol}
+                      assetClass={h.assetClass}
+                      currency={h.currency}
+                    />
+                    <div>
+                      <Link
+                        to={`/asset/${encodeURIComponent(h.symbol)}`}
+                        className="font-medium text-text hover:text-accent"
                       >
-                        <AlertTriangle className="size-3" />
-                        cost unknown
-                      </span>
-                    ) : null}
+                        {h.symbol}
+                      </Link>
+                      <div className="mt-0.5 flex items-center gap-1.5">
+                        <span className="text-[11px] uppercase tracking-wide text-text-subtle">
+                          {h.assetClass}
+                        </span>
+                        {h.hasUnknownCost ? (
+                          <span
+                            className="inline-flex items-center gap-1 text-[11px] text-warning"
+                            title="Part of this position has no recorded purchase price — P/L is incomplete, not zero."
+                          >
+                            <AlertTriangle className="size-3" />
+                            cost unknown
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
                   </div>
                 </td>
 
@@ -95,8 +106,12 @@ export function HoldingsTable({
                     <span title="No purchase price recorded for this position.">—</span>
                   )}
                 </td>
-                <td className="px-3 py-3 text-right nums text-text">
-                  {formatCurrency(h.currentPrice, h.currency)}
+                <td className="px-3 py-3 text-right text-text">
+                  <LivePrice
+                    symbol={h.symbol}
+                    fallbackPrice={h.currentPrice}
+                    currency={h.currency}
+                  />
                 </td>
                 <td className="px-3 py-3 text-right nums font-medium text-text">
                   {hide(formatCurrency(convert(h.marketValue, h.currency), displayCurrency))}

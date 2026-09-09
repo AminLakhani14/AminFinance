@@ -39,7 +39,8 @@ export function AssetDetail() {
     limit: range.limit,
   });
   const fundamentals = useGetFundamentalsQuery(symbol);
-  const news = useGetNewsQuery([symbol], { skip: assetClass === 'crypto' });
+  // Only PSX issuers have company announcements to show.
+  const news = useGetNewsQuery([symbol], { skip: assetClass !== 'stock' });
 
   return (
     <div className="space-y-6">

@@ -49,7 +49,11 @@ export function PortfolioReviewCard({
           <p className="text-sm text-text-muted">
             Set{' '}
             <code className="rounded bg-surface-sunken px-1.5 py-0.5 font-mono text-xs">
-              ANTHROPIC_API_KEY
+              OPENAI_BASE_URL
+            </code>{' '}
+            and{' '}
+            <code className="rounded bg-surface-sunken px-1.5 py-0.5 font-mono text-xs">
+              OPENAI_MODEL
             </code>{' '}
             in server/.env to enable this.
           </p>

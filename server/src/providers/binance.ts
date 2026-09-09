@@ -17,6 +17,7 @@ import type {
   BinanceAccount,
   BinanceBalance,
   BinanceTrade,
+  MarketRow,
 } from '@aminfinance/shared';
 import { httpGetJson, httpGet } from '../lib/http.js';
 import { AppError } from '../lib/errors.js';
@@ -81,6 +82,8 @@ interface Ticker24h {
   openPrice: string;
   prevClosePrice: string;
   volume: string;
+  /** Turnover in the quote asset — comparable across pairs, unlike `volume`. */
+  quoteVolume?: string;
   closeTime: number;
 }
 
@@ -338,4 +341,49 @@ export async function resolvePair(asset: string): Promise<string | null> {
     if (pairs.has(candidate)) return candidate;
   }
   return null;
+}
+
+/**
+ * Every tradable pair's 24h ticker in a single call.
+ *
+ * `/ticker/24hr` with no `symbol` parameter returns the whole book — around
+ * 3,000 rows. That is one request instead of thousands, but it is also a heavy
+ * one (weight 80), so the caller is expected to cache it rather than poll.
+ *
+ * Filtered to a single quote asset by default: the raw list contains every
+ * cross (BTCETH, ETHBNB, …), which is noise for someone browsing what to buy,
+ * and the same coin appears a dozen times priced in different assets.
+ */
+export async function getMarketTickers(quoteAsset = 'USDT'): Promise<MarketRow[]> {
+  await gate('binance');
+
+  const tickers = await httpGetJson<Ticker24h[]>(`${BASE}/api/v3/ticker/24hr`, {
+    provider: PROVIDER,
+    timeoutMs: 20_000,
+  });
+
+  const suffix = quoteAsset.toUpperCase();
+  const rows: MarketRow[] = [];
+
+  for (const t of tickers) {
+    const symbol = t.symbol?.toUpperCase();
+    if (!symbol || !symbol.endsWith(suffix) || symbol.length <= suffix.length) continue;
+
+    const price = Number(t.lastPrice);
+    // Delisted and pre-launch pairs sit in the list at zero; they are not
+    // buyable and would dominate any sort by percentage change.
+    if (!Number.isFinite(price) || price <= 0) continue;
+
+    rows.push({
+      symbol,
+      assetClass: 'crypto',
+      price,
+      change: Number(t.priceChange) || 0,
+      changePercent: Number(t.priceChangePercent) || 0,
+      volume: Number(t.quoteVolume) || null,
+      currency: suffix,
+    });
+  }
+
+  return rows;
 }

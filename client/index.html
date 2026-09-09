@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark light" />
     <meta name="description" content="Portfolio tracking and analytics for stocks and crypto." />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/logo.svg" />
+    <meta name="theme-color" content="#12469A" />
     <title>AminFinance</title>
     <script>
       // Apply the stored theme before first paint. Without this the app flashes
@@ -12,8 +15,9 @@
       (function () {
         try {
           var stored = localStorage.getItem('aminfinance.theme');
-          var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-          var dark = stored ? stored === 'dark' : prefersDark;
+          // The cosmic interface is designed dark-first. A saved preference
+          // still wins, and the in-app toggle keeps light mode available.
+          var dark = stored ? stored === 'dark' : true;
           document.documentElement.classList.toggle('dark', dark);
         } catch (_) {}
       })();

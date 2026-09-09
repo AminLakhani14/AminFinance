@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, WifiOff } from 'lucide-react';
+import { ArrowRight, Orbit, WifiOff } from 'lucide-react';
 import { Card, CardBody, CardHeader } from '@/components/ui/Card';
 import { StatTile } from '@/components/ui/StatTile';
 import { DonutChart } from '@/components/charts/DonutChart';
@@ -66,7 +66,7 @@ export function Dashboard() {
             </div>
             <Link
               to="/portfolio"
-              className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-fg transition-colors hover:bg-accent-hover"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-white/15 bg-gradient-to-r from-accent to-violet-500 px-4 py-2 text-sm font-medium text-accent-fg shadow-[0_8px_28px_-10px_var(--accent)] transition-all hover:brightness-110 active:scale-[0.98]"
             >
               Go to portfolio
               <ArrowRight className="size-4" />
@@ -153,11 +153,26 @@ export function Dashboard() {
 
 function PageHeading() {
   return (
-    <div>
-      <h1 className="text-xl font-semibold tracking-tight text-text">Dashboard</h1>
-      <p className="mt-1 text-sm text-text-muted">
-        Your combined PSX and crypto position.
-      </p>
+    <div className="flex flex-wrap items-end justify-between gap-4">
+      <div>
+        <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-accent/25 bg-accent/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-accent backdrop-blur">
+          <Orbit className="size-3" />
+          Live command center
+        </div>
+        <h1 className="text-2xl font-semibold tracking-[-0.04em] text-text md:text-3xl">
+          Financial overview
+        </h1>
+        <p className="mt-1.5 text-sm text-text-muted">
+          Your combined PSX and crypto position, in real time.
+        </p>
+      </div>
+      <div className="hidden items-center gap-2 rounded-full border border-positive/20 bg-positive/10 px-3 py-1.5 text-xs text-positive backdrop-blur sm:flex">
+        <span className="relative flex size-2">
+          <span className="absolute inline-flex size-full animate-ping rounded-full bg-positive opacity-60" />
+          <span className="relative inline-flex size-2 rounded-full bg-positive" />
+        </span>
+        Markets connected
+      </div>
     </div>
   );
 }

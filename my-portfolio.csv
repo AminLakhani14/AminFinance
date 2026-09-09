@@ -19,6 +19,17 @@
 #   displays "—" for P/L instead of inventing a 100% gain, and leaves it out of
 #   portfolio-level P/L. Edit the row with what you actually paid and the P/L
 #   starts working.
+# XAGUSD (silver): quantity is in TROY OUNCES, because that is what the spot
+#   market quotes and what Twelve Data returns. 20 tola = 7.5 troy oz exactly —
+#   the standard tola is 11.6638038 g and the troy ounce 31.1034768 g, a ratio
+#   of exactly 3/8. Storing tola instead would mean cost basis and live price
+#   were denominated in different units, which is how a position silently
+#   misprices by 2.67x. The Add-transaction dialog shows the tola equivalent
+#   under the quantity field so you never have to do this conversion by hand.
+#
+#   The date is a placeholder — you did not say when you bought. Edit it to the
+#   real trade date; it affects holding-period reporting only, not P/L.
+#
 symbol,assetClass,type,quantity,price,fee,currency,date,notes
 FATIMA,stock,buy,303,151.26,0,PKR,2026-03-28,Average cost from broker
 FFC,stock,buy,240,563.13,0,PKR,2026-04-17,Average cost from broker
@@ -26,3 +37,4 @@ HUBC,stock,buy,100,190.75,0,PKR,2026-05-07,Average cost from broker
 BTCUSDT,crypto,buy,0.00306088,76078,0,USDT,2026-01-07,Cost derived from Binance floating P/L
 XRPUSDT,crypto,buy,10.42481218,1.8536,0,USDT,2026-02-26,Cost derived from Binance floating P/L
 WBETHUSDT,crypto,buy,0.04014739,0,0,USDT,2026-03-15,Cost unknown - Binance reports no purchase price (Earn/staking conversion)
+XAGUSD,commodity,buy,7.5,92,0,USD,2026-08-01,20 tola silver at USD 92/troy oz - see note below; DATE IS A PLACEHOLDER

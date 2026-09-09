@@ -18,10 +18,13 @@ import type {
   Fundamentals,
   DividendInfo,
   FxRates,
+  MarketRow,
+  MarketListing,
 } from '@aminfinance/shared';
 import { CACHE_HEADERS } from '@aminfinance/shared';
 import * as psx from '../providers/psx.js';
 import * as binance from '../providers/binance.js';
+import * as metals from '../providers/metals.js';
 import * as fx from '../providers/fx.js';
 import { cached, TTL, type CacheLookup } from '../lib/cache.js';
 import { AppError } from '../lib/errors.js';
@@ -38,6 +41,9 @@ const CRYPTO_QUOTE_SUFFIXES = ['USDT', 'FDUSD', 'USDC', 'BUSD', 'BTC', 'ETH', 'B
 export function classify(symbol: string, hint?: AssetClass): AssetClass {
   if (hint) return hint;
   const s = symbol.toUpperCase();
+  // Checked first, and against an explicit list rather than a suffix rule:
+  // XAGUSD would otherwise fall through to the PSX path and 404.
+  if (metals.isCommodity(s)) return 'commodity';
   return CRYPTO_QUOTE_SUFFIXES.some((q) => s.endsWith(q) && s.length > q.length)
     ? 'crypto'
     : 'stock';
@@ -70,6 +76,7 @@ export async function marketRoutes(app: FastifyInstance): Promise<void> {
 
     const crypto = symbols.filter((s) => classify(s) === 'crypto');
     const stocks = symbols.filter((s) => classify(s) === 'stock');
+    const commodities = symbols.filter((s) => classify(s) === 'commodity');
 
     const quotes: Quote[] = [];
     const errors: Record<string, string> = {};
@@ -89,6 +96,28 @@ export async function marketRoutes(app: FastifyInstance): Promise<void> {
       } catch (err) {
         for (const s of crypto) errors[s] = err instanceof Error ? err.message : 'failed';
       }
+    }
+
+    // Metals: cached per symbol like stocks, but the free Twelve Data tier is
+    // 8/minute, so these stay sequential inside the provider.
+    if (commodities.length > 0) {
+      const results = await Promise.allSettled(
+        commodities.map((symbol) =>
+          cached(`quote:commodity:${symbol}`, TTL.quote, () => metals.getQuote(symbol)),
+        ),
+      );
+      results.forEach((result, i) => {
+        const symbol = commodities[i] as string;
+        if (result.status === 'fulfilled') {
+          quotes.push(result.value.value);
+          oldestAge = Math.max(oldestAge, result.value.ageSeconds);
+          anyStale ||= result.value.stale;
+          allHit &&= result.value.hit;
+        } else {
+          errors[symbol] =
+            result.reason instanceof Error ? result.reason.message : 'failed';
+        }
+      });
     }
 
     // PSX is one request per symbol; run them concurrently under the bucket.
@@ -125,6 +154,78 @@ export async function marketRoutes(app: FastifyInstance): Promise<void> {
     return { quotes, ...(Object.keys(errors).length > 0 ? { errors } : {}) };
   });
 
+  /**
+   * GET /api/market/:assetClass — every instrument in one listing.
+   *
+   * Backed by a single upstream call per class (PSX's market-watch page,
+   * Binance's unparameterised 24h ticker), so browsing the whole market costs
+   * one request rather than one per symbol. Cached hard: these are the two
+   * heaviest upstream calls in the app.
+   */
+  app.get<{ Params: { assetClass: string }; Querystring: { quote?: string } }>(
+    '/api/market/:assetClass',
+    async (request, reply) => {
+      const assetClass = request.params.assetClass.toLowerCase();
+      const quote = (request.query.quote ?? 'USDT').toUpperCase();
+
+      if (assetClass === 'stock') {
+        const result = await cached<MarketListing>(
+          'market:stock',
+          TTL.quote,
+          async () => ({
+            assetClass: 'stock' as const,
+            rows: await psx.getMarketWatch(),
+            asOf: Date.now(),
+          }),
+          { persist: true },
+        );
+        applyCacheHeaders(reply, result);
+        return result.value;
+      }
+
+      if (assetClass === 'crypto') {
+        const result = await cached<MarketListing>(
+          `market:crypto:${quote}`,
+          TTL.quote,
+          async () => ({
+            assetClass: 'crypto' as const,
+            rows: await binance.getMarketTickers(quote),
+            asOf: Date.now(),
+          }),
+          { persist: true },
+        );
+        applyCacheHeaders(reply, result);
+        return result.value;
+      }
+
+      if (assetClass === 'commodity') {
+        // A fixed list of four, so this is a fan-out rather than a bulk call.
+        const symbols = metals.listSymbols();
+        const settled = await Promise.allSettled(
+          symbols.map((s) => cached(`quote:commodity:${s}`, TTL.quote, () => metals.getQuote(s))),
+        );
+        const rows: MarketRow[] = settled.flatMap((r) =>
+          r.status === 'fulfilled'
+            ? [
+                {
+                  symbol: r.value.value.symbol,
+                  assetClass: 'commodity' as const,
+                  price: r.value.value.price,
+                  change: r.value.value.change,
+                  changePercent: r.value.value.changePercent,
+                  volume: null,
+                  currency: r.value.value.currency,
+                },
+              ]
+            : [],
+        );
+        return { assetClass: 'commodity' as const, rows, asOf: Date.now() } satisfies MarketListing;
+      }
+
+      throw AppError.badRequest('assetClass must be one of: stock, crypto, commodity');
+    },
+  );
+
   /** GET /api/candles/:symbol?interval=1d&limit=400 */
   app.get<{
     Params: { symbol: string };
@@ -144,7 +245,9 @@ export async function marketRoutes(app: FastifyInstance): Promise<void> {
       () =>
         assetClass === 'crypto'
           ? binance.getCandles(symbol, interval, limit)
-          : psx.getCandles(symbol, interval, limit),
+          : assetClass === 'commodity'
+            ? metals.getCandles(symbol, interval, limit)
+            : psx.getCandles(symbol, interval, limit),
     );
 
     applyCacheHeaders(reply, result);
@@ -157,6 +260,40 @@ export async function marketRoutes(app: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const symbol = request.params.symbol.toUpperCase();
       const assetClass = classify(symbol, request.query.assetClass);
+
+      if (assetClass === 'commodity') {
+        // Spot metal has no issuer, no earnings, and no supply figure. The
+        // shaped object exists so the client renders one layout for everything.
+        const result = await cached<Fundamentals>(
+          `fundamentals:${symbol}`,
+          TTL.fundamentals,
+          async () => {
+            const q = await metals.getQuote(symbol);
+            return {
+              symbol,
+              assetClass: 'commodity' as const,
+              name: metals.displayName(symbol),
+              currency: q.currency,
+              marketCap: null,
+              peRatio: null,
+              epsTtm: null,
+              dividendYield: null,
+              beta: null,
+              sector: 'Precious metals',
+              industry: null,
+              exchange: 'Spot',
+              description: null,
+              logoUrl: null,
+              weekHigh52: null,
+              weekLow52: null,
+              circulatingSupply: null,
+            };
+          },
+          { persist: true },
+        );
+        applyCacheHeaders(reply, result);
+        return result.value;
+      }
 
       if (assetClass === 'crypto') {
         // Crypto fundamentals come from the 24h ticker; there is no company
@@ -206,10 +343,12 @@ export async function marketRoutes(app: FastifyInstance): Promise<void> {
   /** GET /api/dividends/:symbol */
   app.get<{ Params: { symbol: string } }>('/api/dividends/:symbol', async (request, reply) => {
     const symbol = request.params.symbol.toUpperCase();
-    if (classify(symbol) === 'crypto') {
+    const assetClass = classify(symbol);
+    // Neither a coin nor a bar of metal pays a dividend.
+    if (assetClass === 'crypto' || assetClass === 'commodity') {
       const empty: DividendInfo = {
         symbol,
-        assetClass: 'crypto',
+        assetClass,
         next: null,
         history: [],
         trailingAnnualAmount: null,
@@ -247,6 +386,15 @@ export async function marketRoutes(app: FastifyInstance): Promise<void> {
       const pairs = await binance.getTradablePairs();
       const matches = [...pairs].filter((p) => p.startsWith(q)).slice(0, 10);
       return { results: matches.map((symbol) => ({ symbol, assetClass: 'crypto' as const })) };
+    }
+
+    // The metals list is short and fixed, so prefix-match it in memory. Done
+    // before the PSX lookup so "XAG" resolves without a network round trip.
+    const metalMatches = metals.listSymbols().filter((s) => s.startsWith(q));
+    if (metalMatches.length > 0) {
+      return {
+        results: metalMatches.map((symbol) => ({ symbol, assetClass: 'commodity' as const })),
+      };
     }
 
     const exists = await psx.symbolExists(q);

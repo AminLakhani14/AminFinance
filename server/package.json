@@ -12,7 +12,6 @@
   },
   "dependencies": {
     "@aminfinance/shared": "*",
-    "@anthropic-ai/sdk": "^0.115.0",
     "@fastify/cors": "^10.0.1",
     "@fastify/helmet": "^12.0.1",
     "@fastify/rate-limit": "^10.2.1",

@@ -27,7 +27,28 @@ const envSchema = z.object({
   TWELVEDATA_API_KEY: z.string().default(''),
   BINANCE_API_KEY: z.string().default(''),
   BINANCE_API_SECRET: z.string().default(''),
-  ANTHROPIC_API_KEY: z.string().default(''),
+
+  // AI insights speak the OpenAI chat-completions dialect, so any compatible
+  // server works: a local Ollama/LM Studio box, a self-hosted vLLM, or the
+  // OpenAI API itself. Only the base URL and model name change.
+  OPENAI_BASE_URL: z.string().default(''),
+  OPENAI_API_KEY: z.string().default(''),
+  OPENAI_MODEL: z.string().default(''),
+  /**
+   * Local models on modest hardware generate at a few tokens/second, so an
+   * insight can legitimately take many minutes. Far longer than the 12s used
+   * for market-data providers.
+   */
+  AI_TIMEOUT_MS: z.coerce.number().int().positive().default(600_000),
+  AI_MAX_TOKENS: z.coerce.number().int().positive().default(4_000),
+  /**
+   * Sent as `reasoning_effort`. On a reasoning model (Qwen3.5, gpt-oss) the
+   * chain of thought is billed in generated tokens, which on a slow local box
+   * costs minutes and can consume the entire budget before any JSON is
+   * emitted — so "none" is the default. Blank omits the field for servers that
+   * reject it.
+   */
+  AI_REASONING_EFFORT: z.enum(['none', 'low', 'medium', 'high', '']).default('none'),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -54,9 +75,9 @@ const isLoopback = LOOPBACK.has(env.HOST);
 if (!env.AUTH_SECRET && !isLoopback) {
   console.error(
     `\nRefusing to start: HOST is "${env.HOST}" (not loopback) and AUTH_SECRET is empty.\n` +
-      `This server holds live Binance and Anthropic credentials. Binding it to a\n` +
-      `reachable interface without a shared secret lets anyone read your balances\n` +
-      `and spend your AI credits.\n\n` +
+      `This server holds live Binance credentials and can reach your AI endpoint.\n` +
+      `Binding it to a reachable interface without a shared secret lets anyone read\n` +
+      `your balances and run jobs on your AI host.\n\n` +
       `Fix: set AUTH_SECRET in server/.env, or set HOST=127.0.0.1.\n` +
       `Generate a secret with:  node -e "console.log(crypto.randomUUID())"\n`,
   );
@@ -74,7 +95,11 @@ export const providers = {
   twelveData: Boolean(env.TWELVEDATA_API_KEY),
   /** Public Binance endpoints need no key; this gates the signed ones only. */
   binanceAccount: Boolean(env.BINANCE_API_KEY && env.BINANCE_API_SECRET),
-  anthropic: Boolean(env.ANTHROPIC_API_KEY),
+  /**
+   * No API key requirement: a local Ollama server accepts any bearer token (or
+   * none), so demanding one here would disable a working setup.
+   */
+  ai: Boolean(env.OPENAI_BASE_URL && env.OPENAI_MODEL),
 } as const;
 
 export type ProviderName = keyof typeof providers;
@@ -98,7 +123,15 @@ export const config = {
     twelveData: env.TWELVEDATA_API_KEY,
     binanceKey: env.BINANCE_API_KEY,
     binanceSecret: env.BINANCE_API_SECRET,
-    anthropic: env.ANTHROPIC_API_KEY,
+  },
+  ai: {
+    /** Normalised without a trailing slash; paths are appended with a leading one. */
+    baseUrl: env.OPENAI_BASE_URL.replace(/\/+$/, ''),
+    apiKey: env.OPENAI_API_KEY,
+    model: env.OPENAI_MODEL,
+    timeoutMs: env.AI_TIMEOUT_MS,
+    maxTokens: env.AI_MAX_TOKENS,
+    reasoningEffort: env.AI_REASONING_EFFORT,
   },
   providers,
 } as const;
@@ -112,7 +145,11 @@ export function describeCapabilities(): string {
     ['Alpha Vantage (dividends)', providers.alphaVantage, 'ALPHAVANTAGE_API_KEY'],
     ['CoinGecko (coin metadata)', providers.coingecko, 'COINGECKO_API_KEY'],
     ['Twelve Data (stock history)', providers.twelveData, 'TWELVEDATA_API_KEY'],
-    ['Claude (AI insights)', providers.anthropic, 'ANTHROPIC_API_KEY'],
+    [
+      `AI insights${providers.ai ? ` (${config.ai.model})` : ''}`,
+      providers.ai,
+      'OPENAI_BASE_URL + OPENAI_MODEL',
+    ],
   ];
 
   return rows

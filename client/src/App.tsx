@@ -21,6 +21,10 @@ const Analytics = lazy(() =>
   import('@/pages/Analytics').then((m) => ({ default: m.Analytics })),
 );
 const News = lazy(() => import('@/pages/News').then((m) => ({ default: m.News })));
+const Suggestions = lazy(() =>
+  import('@/pages/Suggestions').then((m) => ({ default: m.Suggestions })),
+);
+const Market = lazy(() => import('@/pages/Market').then((m) => ({ default: m.Market })));
 const Settings = lazy(() =>
   import('@/pages/Settings').then((m) => ({ default: m.Settings })),
 );
@@ -61,6 +65,22 @@ export function App() {
             element={
               <Suspense fallback={<RouteFallback />}>
                 <Analytics />
+              </Suspense>
+            }
+          />
+          <Route
+            path="market"
+            element={
+              <Suspense fallback={<RouteFallback />}>
+                <Market />
+              </Suspense>
+            }
+          />
+          <Route
+            path="suggestions"
+            element={
+              <Suspense fallback={<RouteFallback />}>
+                <Suggestions />
               </Suspense>
             }
           />

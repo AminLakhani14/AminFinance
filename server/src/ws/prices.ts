@@ -35,6 +35,19 @@ function desiredSymbols(): Set<string> {
   return all;
 }
 
+/**
+ * Whether the upstream socket is genuinely open.
+ *
+ * Not `upstream?.readyState === upstream?.OPEN`: when `upstream` is null both
+ * sides are `undefined` and that comparison is true, so a dead stream reports
+ * as connected. That made the reconnect check below treat "no socket, same
+ * symbols" as "already connected correctly" and return without reconnecting —
+ * the stream never came back after a drop.
+ */
+function isUpstreamOpen(): boolean {
+  return upstream !== null && upstream.readyState === upstream.OPEN;
+}
+
 function broadcast(message: PriceTickMessage | PriceStatusMessage): void {
   const payload = JSON.stringify(message);
   for (const [socket, symbols] of clients) {
@@ -67,7 +80,7 @@ function connectUpstream(log: FastifyInstance['log']): void {
 
   // Already connected with the right subscription set — nothing to do.
   const same =
-    upstream?.readyState === upstream?.OPEN &&
+    isUpstreamOpen() &&
     wanted.size === subscribedSymbols.size &&
     [...wanted].every((s) => subscribedSymbols.has(s));
   if (same) return;
@@ -138,7 +151,7 @@ export async function priceStreamRoutes(app: FastifyInstance): Promise<void> {
 
     const status: PriceStatusMessage = {
       type: 'status',
-      connected: upstream?.readyState === upstream?.OPEN,
+      connected: isUpstreamOpen(),
     };
     socket.send(JSON.stringify(status));
 

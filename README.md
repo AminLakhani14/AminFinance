@@ -1,3 +1,5 @@
+<img src="./client/public/logo.svg" alt="" width="64" height="64" />
+
 # AminFinance
 
 Portfolio tracking and analytics for stocks and Binance crypto — live P/L, charts, dividend calendar, news, and AI-generated commentary.

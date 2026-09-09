@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 56" width="260" height="56" role="img" aria-label="AminFinance">
+  <title>AminFinance</title>
+  <defs>
+    <linearGradient id="af-wm" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4A93EC" />
+      <stop offset="1" stop-color="#12469A" />
+    </linearGradient>
+  </defs>
+
+  <g transform="translate(0 4)">
+    <rect width="48" height="48" rx="12" fill="url(#af-wm)" />
+    <path
+      d="M11 36 L24 12 L37 36"
+      fill="none"
+      stroke="#fff"
+      stroke-width="4.2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <path d="M17 28 H31" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" />
+    <circle cx="24" cy="12" r="3.7" fill="#3DDC9A" />
+  </g>
+
+  <!-- System UI stack, matching --font-sans. Convert to outlines before using
+       this file anywhere the font stack is not guaranteed (e.g. print). -->
+  <text
+    x="62"
+    y="30"
+    font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif"
+    font-size="23"
+    font-weight="600"
+    letter-spacing="-0.5"
+    fill="currentColor"
+    dominant-baseline="middle"
+  >Amin<tspan fill="#2B7CDD">Finance</tspan></text>
+  <text
+    x="63"
+    y="45"
+    font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif"
+    font-size="10.5"
+    letter-spacing="1.4"
+    fill="currentColor"
+    opacity="0.55"
+  >PORTFOLIO TRACKER</text>
+</svg>

@@ -22,6 +22,7 @@ import type {
   CandleInterval,
   Fundamentals,
   DividendInfo,
+  MarketRow,
 } from '@aminfinance/shared';
 import { httpGetJson, httpGetText } from '../lib/http.js';
 import { AppError } from '../lib/errors.js';
@@ -407,4 +408,66 @@ export async function symbolExists(rawSymbol: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Whole-market snapshot from the Data Portal's market-watch page.
+ *
+ * The only bulk source PSX exposes — every other endpoint here is per-symbol,
+ * so listing ~480 issuers any other way would mean ~480 requests. This is one.
+ *
+ * It is scraped HTML, so it is parsed defensively in the same spirit as the
+ * rest of this file: rows that don't match the expected column count are
+ * skipped rather than throwing, and a wholesale layout change surfaces as an
+ * empty result the caller can report, not as garbage prices.
+ *
+ * Column order as published:
+ *   SYMBOL | SECTOR | LISTED IN | LDCP | OPEN | HIGH | LOW | CURRENT |
+ *   CHANGE | CHANGE (%) | VOLUME
+ */
+const MARKET_WATCH_COLUMNS = 11;
+
+export async function getMarketWatch(): Promise<MarketRow[]> {
+  await gate();
+
+  const html = await httpGetText(`${BASE}/market-watch`, {
+    provider: PROVIDER,
+    // A ~470kb page; the default retry budget is fine but give it room.
+    timeoutMs: 20_000,
+  });
+
+  const rows: MarketRow[] = [];
+  for (const match of html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const cells = [...(match[1] ?? '').matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map((c) =>
+      stripTags(c[1] ?? ''),
+    );
+    if (cells.length !== MARKET_WATCH_COLUMNS) continue; // header or layout row
+
+    const symbol = (cells[0] ?? '').toUpperCase();
+    const price = parseNumber(cells[7] ?? '');
+    // A symbol with no current price is untradeable today; it would render as
+    // a blank row and sort unpredictably.
+    if (!symbol || price === null) continue;
+
+    rows.push({
+      symbol,
+      assetClass: 'stock',
+      price,
+      change: parseNumber(cells[8] ?? '') ?? 0,
+      changePercent: parseNumber(cells[9] ?? '') ?? 0,
+      volume: parseNumber(cells[10] ?? ''),
+      currency: CURRENCY,
+      sector: cells[1] || null,
+      listedIn: cells[2] || null,
+    });
+  }
+
+  if (rows.length === 0) {
+    throw AppError.providerError(
+      PROVIDER,
+      'Market watch returned no parseable rows — the page layout has likely changed.',
+    );
+  }
+
+  return rows;
 }

@@ -7,6 +7,8 @@ import {
   LayoutDashboard,
   Wallet,
   ChartLine,
+  Globe,
+  Sparkles,
   Newspaper,
   Settings as SettingsIcon,
   Sun,
@@ -17,12 +19,19 @@ import {
 import { useAppDispatch, useAppSelector } from '@/app/hooks';
 import { toggleTheme, togglePrivacyMode } from '@/features/settings/settingsSlice';
 import { ServerStatus } from './ServerStatus';
+import { StreamStatus } from './StreamStatus';
+import { TickerTape } from './TickerTape';
+import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
+import { Logo, LogoMark } from '@/components/ui/Logo';
 import { cn } from '@/lib/utils';
+import { CosmicBackground } from './CosmicBackground';
 
 const NAV = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/portfolio', label: 'Portfolio', icon: Wallet, end: false },
+  { to: '/market', label: 'Market', icon: Globe, end: false },
   { to: '/analytics', label: 'Analytics', icon: ChartLine, end: false },
+  { to: '/suggestions', label: 'AI', icon: Sparkles, end: false },
   { to: '/news', label: 'News', icon: Newspaper, end: false },
   { to: '/settings', label: 'Settings', icon: SettingsIcon, end: false },
 ] as const;
@@ -35,22 +44,18 @@ export function AppShell() {
   const reduceMotion = useReducedMotion();
 
   return (
-    <div className="min-h-screen bg-bg">
+    <div className="relative min-h-screen overflow-x-clip bg-bg">
+      <CosmicBackground />
       {/* Sidebar — collapses to a bottom bar under md. */}
       <aside
         className={cn(
-          'fixed inset-x-0 bottom-0 z-20 flex h-16 items-center justify-around',
-          'border-t border-border bg-surface/95 backdrop-blur',
-          'md:inset-y-0 md:left-0 md:right-auto md:h-auto md:w-56 md:flex-col',
-          'md:items-stretch md:justify-start md:border-r md:border-t-0 md:px-3 md:py-5',
+          'fixed inset-x-3 bottom-3 z-30 flex h-16 items-center justify-around',
+          'rounded-2xl border border-border bg-surface/90 shadow-2xl backdrop-blur-2xl',
+          'md:inset-y-3 md:left-3 md:right-auto md:h-auto md:w-60 md:flex-col',
+          'md:items-stretch md:justify-start md:border md:px-3 md:py-5',
         )}
       >
-        <div className="hidden px-2 pb-6 md:block">
-          <span className="text-base font-semibold tracking-tight text-text">
-            Amin<span className="text-accent">Finance</span>
-          </span>
-          <p className="mt-0.5 text-[11px] text-text-subtle">Portfolio tracker</p>
-        </div>
+        <Logo className="hidden px-2 pb-7 md:flex" />
 
         <nav className="flex w-full items-center justify-around md:flex-col md:items-stretch md:gap-1">
           {NAV.map(({ to, label, icon: Icon, end }) => (
@@ -60,30 +65,36 @@ export function AppShell() {
               end={end}
               className={({ isActive }) =>
                 cn(
-                  'flex flex-col items-center gap-1 rounded-lg px-3 py-2 text-[11px] font-medium',
-                  'transition-colors duration-150',
+                  'group relative flex flex-col items-center gap-1 overflow-hidden rounded-xl px-3 py-2 text-[11px] font-medium',
+                  'transition-all duration-200',
                   'md:flex-row md:gap-3 md:text-sm',
                   isActive
-                    ? 'text-accent md:bg-surface-raised'
-                    : 'text-text-muted hover:text-text md:hover:bg-surface-raised',
+                    ? 'bg-accent/12 text-accent ring-1 ring-inset ring-accent/25'
+                    : 'text-text-muted hover:bg-surface-raised/70 hover:text-text',
                 )
               }
             >
-              <Icon className="size-5 md:size-4" strokeWidth={2} />
+              <Icon className="size-5 transition-transform duration-200 group-hover:scale-110 md:size-4" strokeWidth={1.8} />
               <span>{label}</span>
             </NavLink>
           ))}
         </nav>
       </aside>
 
-      <div className="pb-16 md:pb-0 md:pl-56">
+      <div className="relative z-10 pb-24 md:pb-0 md:pl-[16.5rem]">
         <header
           className={cn(
-            'sticky top-0 z-10 flex h-14 items-center justify-between gap-3',
-            'border-b border-border bg-bg/85 px-4 backdrop-blur md:px-6',
+            'sticky top-0 z-20 flex h-16 items-center justify-between gap-3',
+            'border-b border-border/80 bg-bg/55 px-4 backdrop-blur-2xl md:px-7',
           )}
         >
-          <ServerStatus />
+          <div className="flex min-w-0 items-center gap-3">
+            {/* The sidebar (and its logo) becomes an icon-only bottom bar under
+                md, so the mark moves up here to keep the app branded. */}
+            <LogoMark className="size-7 shrink-0 md:hidden" />
+            <ServerStatus />
+            <StreamStatus />
+          </div>
 
           <div className="flex items-center gap-1">
             <button
@@ -105,7 +116,9 @@ export function AppShell() {
           </div>
         </header>
 
-        <main className="mx-auto max-w-7xl px-4 py-6 md:px-6 md:py-8">
+        <TickerTape />
+
+        <main className="mx-auto max-w-[1440px] px-4 py-6 md:px-7 md:py-8">
           {/* Keyed on pathname so each route animates in independently.
               Skipped entirely under prefers-reduced-motion. */}
           <LazyMotion features={domAnimation} strict>
@@ -120,7 +133,11 @@ export function AppShell() {
                 {...(reduceMotion ? {} : { exit: { opacity: 0, y: -8 } })}
                 transition={{ duration: 0.18, ease: 'easeOut' }}
               >
-                <Outlet />
+                {/* Keyed on pathname too, so navigating away from a crashed
+                    route mounts a fresh boundary rather than a stuck one. */}
+                <ErrorBoundary key={location.pathname}>
+                  <Outlet />
+                </ErrorBoundary>
               </m.div>
             </AnimatePresence>
           </LazyMotion>

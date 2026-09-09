@@ -34,7 +34,10 @@ const BUDGETS: Record<string, { capacity: number; perSecond: number }> = {
   // 25/day. One token every ~an hour, tiny burst allowance.
   alphaVantage: { capacity: 3, perSecond: 0.0003 },
   twelveData: { capacity: 5, perSecond: 0.15 },
-  anthropic: { capacity: 3, perSecond: 0.1 },
+  // A local model serves one request at a time and takes minutes per answer.
+  // Capacity 1 keeps a second insight from queueing behind the first and
+  // timing out; the queue wait in `acquire` rejects fast rather than piling on.
+  ai: { capacity: 1, perSecond: 0.05 },
 };
 
 function getBucket(provider: string): Bucket {

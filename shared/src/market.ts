@@ -5,7 +5,7 @@
  */
 
 /** Which market an instrument trades on. Drives provider routing server-side. */
-export type AssetClass = 'stock' | 'crypto';
+export type AssetClass = 'stock' | 'crypto' | 'commodity';
 
 /**
  * A normalized instrument identifier.
@@ -128,4 +128,31 @@ export interface FxRates {
   rates: Record<string, number>;
   /** Epoch ms of the rate snapshot. */
   timestamp: number;
+}
+
+/**
+ * One row of a market-wide listing.
+ *
+ * Deliberately thinner than `Quote`: a screener shows hundreds of instruments
+ * at once, and the fields a `Quote` carries per symbol (previous close, exact
+ * timestamps) would multiply the payload for data no row displays.
+ */
+export interface MarketRow {
+  symbol: string;
+  assetClass: AssetClass;
+  price: number;
+  change: number;
+  changePercent: number;
+  volume: number | null;
+  currency: string;
+  /** PSX only — sector code and the index the issuer is listed in. */
+  sector?: string | null;
+  listedIn?: string | null;
+}
+
+export interface MarketListing {
+  assetClass: AssetClass;
+  rows: MarketRow[];
+  /** Epoch ms the listing was read upstream. */
+  asOf: number;
 }

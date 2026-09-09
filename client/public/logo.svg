@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48" role="img" aria-label="AminFinance">
+  <title>AminFinance</title>
+  <defs>
+    <linearGradient id="af-tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4A93EC" />
+      <stop offset="1" stop-color="#12469A" />
+    </linearGradient>
+  </defs>
+
+  <!-- Tile -->
+  <rect width="48" height="48" rx="12" fill="url(#af-tile)" />
+
+  <!-- The "A": also reads as a price line rising to a peak and settling back. -->
+  <path
+    d="M11 36 L24 12 L37 36"
+    fill="none"
+    stroke="#fff"
+    stroke-width="4.2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path d="M17 28 H31" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" />
+
+  <!-- Peak marker, in the app's "positive" green. -->
+  <circle cx="24" cy="12" r="3.7" fill="#3DDC9A" />
+</svg>

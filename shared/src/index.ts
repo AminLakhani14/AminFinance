@@ -12,6 +12,8 @@ export type {
   Sentiment,
   NewsArticle,
   FxRates,
+  MarketRow,
+  MarketListing,
 } from './market.js';
 
 export type {
@@ -35,9 +37,14 @@ export type {
   InsightPoint,
   AssetInsight,
   InsightDataSnapshot,
+  TechnicalSnapshot,
+  TradeLevels,
   ConcentrationFlag,
   RebalanceSuggestion,
   PortfolioReview,
+  Opportunity,
+  OpportunitySet,
+  OpportunitiesRequest,
   AnalyzeRequest,
   PortfolioReviewRequest,
 } from './ai.js';
