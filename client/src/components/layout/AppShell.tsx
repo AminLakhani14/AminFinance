@@ -6,6 +6,7 @@ import { m, LazyMotion, domAnimation, AnimatePresence, useReducedMotion } from '
 import {
   LayoutDashboard,
   Wallet,
+  Receipt,
   ChartLine,
   Globe,
   Sparkles,
@@ -29,6 +30,7 @@ import { CosmicBackground } from './CosmicBackground';
 const NAV = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/portfolio', label: 'Portfolio', icon: Wallet, end: false },
+  { to: '/expenses', label: 'Expenses', icon: Receipt, end: false },
   { to: '/market', label: 'Market', icon: Globe, end: false },
   { to: '/analytics', label: 'Analytics', icon: ChartLine, end: false },
   { to: '/suggestions', label: 'AI', icon: Sparkles, end: false },

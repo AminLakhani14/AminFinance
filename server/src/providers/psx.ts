@@ -22,6 +22,7 @@ import type {
   CandleInterval,
   Fundamentals,
   DividendInfo,
+  DividendEvent,
   MarketRow,
 } from '@aminfinance/shared';
 import { httpGetJson, httpGetText } from '../lib/http.js';
@@ -269,6 +270,16 @@ function toWeekly(daily: Candle[]): Candle[] {
 const STATS_PATTERN =
   /<div class="stats_label">([\s\S]*?)<\/div>\s*<div class="stats_value">([\s\S]*?)<\/div>/g;
 
+/**
+ * The issuer's own website, from the company profile's WEBSITE block.
+ *
+ * PSX publishes no company logos, but it does publish this — and an issuer's
+ * domain is enough to fetch its favicon, which is in practice its logo. That
+ * makes a real mark derivable for most of the ~500 listings instead of only
+ * the few dozen anyone would hand-maintain a table for.
+ */
+const WEBSITE_PATTERN = /WEBSITE<\/div>\s*<p>\s*<a[^>]*href="([^"]+)"/i;
+
 function stripTags(html: string): string {
   return html.replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').trim();
 }
@@ -279,6 +290,39 @@ function parseNumber(raw: string | undefined): number | null {
   if (cleaned === '' || cleaned === '-' || cleaned === '.') return null;
   const n = Number(cleaned);
   return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * A logo URL for the issuer, derived from the website it lists with PSX.
+ *
+ * The exchange hosts no company logos, so this goes via the issuer's own
+ * domain and a favicon service. That is a real mark for most listings rather
+ * than the few dozen a hand-kept table would ever cover, and it stays correct
+ * as companies are listed and renamed without anyone editing a mapping.
+ *
+ * Returns null rather than guessing when there is no usable website — the
+ * client renders a generated monogram in that case, and a guessed domain would
+ * risk putting some other company's logo on a holding.
+ */
+function issuerLogoUrl(html: string): string | null {
+  const href = WEBSITE_PATTERN.exec(html)?.[1]?.trim();
+  if (!href) return null;
+
+  let host: string;
+  try {
+    // Listed values are inconsistent about the scheme; assume http when absent
+    // so the URL parses. Only the host is used, so the scheme never matters.
+    host = new URL(/^https?:\/\//i.test(href) ? href : `http://${href}`).hostname;
+  } catch {
+    return null;
+  }
+
+  host = host.replace(/^www\./i, '').toLowerCase();
+  // A bare label with no dot is not a domain, and PSX's own host would yield
+  // the exchange's logo on every row.
+  if (!host.includes('.') || host.endsWith('psx.com.pk')) return null;
+
+  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=64`;
 }
 
 /** First value for a label, matched case-insensitively on a prefix. */
@@ -337,7 +381,7 @@ export async function getFundamentals(rawSymbol: string): Promise<Fundamentals> 
     industry: null,
     exchange: 'PSX',
     description: null,
-    logoUrl: null,
+    logoUrl: issuerLogoUrl(html),
     weekHigh52: rangeParts[1] ?? null,
     weekLow52: rangeParts[0] ?? null,
     circulatingSupply: null,
@@ -347,30 +391,168 @@ export async function getFundamentals(rawSymbol: string): Promise<Fundamentals> 
 /**
  * Dividends.
  *
- * The company page's `#payouts` section is populated client-side, so it is
- * empty in the HTML we receive — there is no server-rendered dividend history
- * to parse. Rather than fabricate one, this returns an empty result and the UI
- * renders "no announced dividends" instead of a broken calendar.
+ * The company page renders its payouts section client-side, so the HTML we get
+ * from `/company/{SYM}` has an empty shell. The table behind it comes from a
+ * separate POST the page's own script makes:
  *
- * Revisit if PSX exposes a JSON payouts endpoint.
+ *   POST /company/payouts   (form-encoded `symbol=LUCK`)  → an HTML <table>
+ *
+ * Undocumented like the rest of this portal, so it is parsed defensively: a
+ * shape change yields fewer events, never a throw.
+ *
+ * PSX quotes cash dividends as a percentage of the PKR 10 par value, not of
+ * the share price — "250%" is PKR 25 per share, on a share trading near 440.
+ * Reading that as a yield would overstate the payout by roughly fifty times,
+ * so the conversion to a per-share amount happens here, once, rather than in
+ * each caller.
  */
+
+/** Par value of a PSX ordinary share. Dividend percentages are quoted on this. */
+const PAR_VALUE = 10;
+
 export async function getDividends(rawSymbol: string): Promise<DividendInfo> {
   const symbol = normalizeSymbol(rawSymbol);
+  await gate();
+
+  let html: string;
+  try {
+    html = await httpGetText(`${BASE}/company/payouts`, {
+      provider: PROVIDER,
+      timeoutMs: 20_000,
+      method: 'POST',
+      body: `symbol=${encodeURIComponent(symbol)}`,
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        'x-requested-with': 'XMLHttpRequest',
+      },
+    });
+  } catch {
+    // A dividend history that cannot be fetched is unknown, not zero. An empty
+    // result renders as "none announced", which is the same thing the caller
+    // shows for a genuine non-payer, so failing soft here is honest enough —
+    // and better than failing the whole asset page over a secondary panel.
+    return { symbol, assetClass: 'stock', next: null, history: [], trailingAnnualAmount: null };
+  }
+
+  const events = parsePayouts(html);
+
+  // Rows are announcements, and an announcement dated in the future is one
+  // whose book closure has not happened yet. That is the "next" payout.
+  const now = Date.now();
+  const upcoming = events.filter((e) => Date.parse(e.exDate) > now);
+  const past = events.filter((e) => Date.parse(e.exDate) <= now);
+
+  // Trailing twelve months, summed per share. Only past events count — an
+  // announced-but-unpaid dividend is not yet income.
+  const yearAgo = now - 365 * 24 * 60 * 60 * 1000;
+  const trailing = past.filter((e) => Date.parse(e.exDate) >= yearAgo);
+
   return {
     symbol,
     assetClass: 'stock',
-    next: null,
-    history: [],
-    trailingAnnualAmount: null,
+    // Soonest first among the upcoming ones; `events` is newest-first overall.
+    next: upcoming.length > 0 ? upcoming[upcoming.length - 1]! : null,
+    history: past,
+    trailingAnnualAmount:
+      trailing.length > 0 ? trailing.reduce((sum, e) => sum + e.amount, 0) : null,
   };
+}
+
+/**
+ * Parse the payouts fragment into cash-dividend events.
+ *
+ * Columns are: announcement date, the financial period, the payout detail, and
+ * the book-closure range. The detail cell carries both the size and the kind:
+ *
+ *   " 250%(F) (D) "      → final cash dividend, 250% of par
+ *   " 85%(i) (D) "       → first interim
+ *   " 80(ii) (D) "       → already per-share, no percent sign
+ *
+ * Only rows marked `(D)` are cash dividends. Bonus and right issues appear in
+ * the same table and are deliberately skipped: they are not income, and
+ * summing them into a trailing figure would invent a payout that never landed.
+ */
+function parsePayouts(html: string): DividendEvent[] {
+  const events: DividendEvent[] = [];
+  const body = /<tbody[^>]*>([\s\S]*?)<\/tbody>/.exec(html)?.[1] ?? '';
+
+  for (const row of body.matchAll(/<tr>([\s\S]*?)<\/tr>/g)) {
+    const cells = [...(row[1] ?? '').matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((c) =>
+      stripTags(c[1] ?? ''),
+    );
+    if (cells.length < 4) continue;
+
+    const [announced, period, detail, closure] = cells as [string, string, string, string];
+    if (!/\(D\)/i.test(detail)) continue;
+
+    const amount = parsePayoutAmount(detail);
+    if (amount === null || amount <= 0) continue;
+
+    // The ex-date is what an investor acts on, and the book-closure start is
+    // the closest PSX publishes to one. Announcement date is the fallback.
+    const exDate = parsePsxDate(closure.split('-')[0]?.trim()) ?? parseLongDate(announced);
+    if (!exDate) continue;
+
+    events.push({
+      exDate,
+      paymentDate: null,
+      recordDate: parsePsxDate(closure.split('-')[1]?.trim()) ?? null,
+      declarationDate: parseLongDate(announced),
+      amount,
+      currency: CURRENCY,
+      // The period the payout relates to, e.g. "30/06/2026(YR)" — kept as
+      // PSX writes it so the UI can show which result it was declared against.
+      period: period || null,
+    });
+  }
+
+  // Newest first, matching the DividendInfo contract.
+  return events.sort((a, b) => Date.parse(b.exDate) - Date.parse(a.exDate));
+}
+
+/**
+ * Per-share amount from a payout detail cell.
+ *
+ * The figure is always a percentage of par value, even on the occasional row
+ * where PSX drops the sign — MEBL's " 80(ii) (D) " sits among six siblings
+ * that all read "70%", and reading it as PKR 80 per share rather than PKR 8
+ * would inflate one payout tenfold and the trailing total with it.
+ *
+ * Treating a bare number as already-per-share was the tempting reading, but no
+ * issuer surveyed actually publishes one that way, so the branch only ever
+ * fired on typos. A percentage is assumed unconditionally.
+ */
+function parsePayoutAmount(detail: string): number | null {
+  const match = /(\d+(?:\.\d+)?)/.exec(detail);
+  if (!match) return null;
+  const percentOfPar = Number(match[1]);
+  if (!Number.isFinite(percentOfPar)) return null;
+  return (percentOfPar / 100) * PAR_VALUE;
+}
+
+/** "18/09/2026" → "2026-09-18". */
+function parsePsxDate(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(raw.trim());
+  if (!m) return null;
+  return `${m[3]}-${m[2]}-${m[1]}`;
+}
+
+/** "August 10, 2026 4:15 PM" → "2026-08-10". */
+function parseLongDate(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const ms = Date.parse(raw.replace(/\s+\d{1,2}:\d{2}\s*(AM|PM)$/i, ''));
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms).toISOString().slice(0, 10);
 }
 
 /**
  * Company announcements — PSX's equivalent of news.
  *
- * Unlike the payouts section, the announcements tables *are* server-rendered,
- * so this is real parseable data: financial results, board meetings, and
- * corporate actions. It is the only PSX-native news source available.
+ * The announcements tables are server-rendered, so unlike the payouts section
+ * they need no second request: financial results, board meetings, and
+ * corporate actions all arrive with the company page. It is the only
+ * PSX-native news source available.
  */
 export async function getAnnouncements(rawSymbol: string): Promise<
   Array<{ date: string; title: string; category: string }>
@@ -411,6 +593,99 @@ export async function symbolExists(rawSymbol: string): Promise<boolean> {
 }
 
 /**
+ * The exchange's instrument directory — symbol, issuer name, and sector name
+ * for every listed instrument, in one JSON request.
+ *
+ * Market-watch publishes a numeric sector code and no name at all, so this is
+ * the only way to label a row with something a human reads. It is a separate
+ * endpoint rather than a scrape, and at ~1,000 entries it is small enough to
+ * fetch whole and join in memory.
+ *
+ * Cached for a day: listings and delistings happen a few times a year, so
+ * refetching per market-watch load would be pure waste. The cache is
+ * deliberately module-local — the directory is an implementation detail of
+ * this provider, not a resource the route layer should have to know about.
+ */
+interface DirectoryEntry {
+  symbol: string;
+  name: string;
+  sectorName: string;
+  isETF: boolean;
+  isDebt: boolean;
+}
+
+const DIRECTORY_TTL_MS = 24 * 60 * 60_000;
+let directoryCache: { at: number; entries: Map<string, DirectoryEntry> } | null = null;
+
+async function getDirectory(): Promise<Map<string, DirectoryEntry>> {
+  if (directoryCache && Date.now() - directoryCache.at < DIRECTORY_TTL_MS) {
+    return directoryCache.entries;
+  }
+
+  const raw = await httpGetJson<unknown>(`${BASE}/symbols`, {
+    provider: PROVIDER,
+    timeoutMs: 20_000,
+  });
+
+  const entries = new Map<string, DirectoryEntry>();
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (typeof item !== 'object' || item === null) continue;
+      const row = item as Record<string, unknown>;
+      const symbol = typeof row.symbol === 'string' ? row.symbol.toUpperCase() : '';
+      if (!symbol) continue;
+      entries.set(symbol, {
+        symbol,
+        name: typeof row.name === 'string' ? row.name.trim() : '',
+        sectorName: typeof row.sectorName === 'string' ? row.sectorName.trim() : '',
+        isETF: row.isETF === true,
+        isDebt: row.isDebt === true,
+      });
+    }
+  }
+
+  // An empty directory is a bad response, not a market with no instruments.
+  // Serve the stale map rather than un-label every row; only fail when there
+  // is nothing to fall back on.
+  if (entries.size === 0) {
+    if (directoryCache) return directoryCache.entries;
+    throw AppError.providerError(
+      PROVIDER,
+      'Symbol directory returned no usable entries — the endpoint shape has likely changed.',
+    );
+  }
+
+  directoryCache = { at: Date.now(), entries };
+  return entries;
+}
+
+/**
+ * Market-watch appends a trade-status suffix to the base ticker and the
+ * directory lists only the base symbols — "UPFLXD" is Unilever Foods trading
+ * ex-dividend, "HASCOLNC" is Hascol flagged non-compliant, "SLYTWU" is Sally
+ * Textile under winding-up, "PIAHCLB" is PIA Holding's B class.
+ *
+ * Tried longest first so "XD" wins before the bare single letters. Checked
+ * against a live market-watch page: these cover every one of the 500 rows.
+ */
+const SYMBOL_SUFFIXES = ['XDXB', 'XBXD', 'XD', 'XB', 'XR', 'NC', 'WU', 'A', 'B', 'R'];
+
+function lookupIssuer(
+  directory: Map<string, DirectoryEntry>,
+  symbol: string,
+): DirectoryEntry | null {
+  const exact = directory.get(symbol);
+  if (exact) return exact;
+
+  for (const suffix of SYMBOL_SUFFIXES) {
+    if (!symbol.endsWith(suffix) || symbol.length <= suffix.length) continue;
+    const base = directory.get(symbol.slice(0, -suffix.length));
+    if (base) return base;
+  }
+  return null;
+}
+
+/**
  * Whole-market snapshot from the Data Portal's market-watch page.
  *
  * The only bulk source PSX exposes — every other endpoint here is per-symbol,
@@ -436,6 +711,15 @@ export async function getMarketWatch(): Promise<MarketRow[]> {
     timeoutMs: 20_000,
   });
 
+  // Names are a label, not data: a directory failure must not cost the user
+  // their prices, so the rows fall back to the scraped sector code.
+  let directory: Map<string, DirectoryEntry> = new Map();
+  try {
+    directory = await getDirectory();
+  } catch {
+    directory = new Map();
+  }
+
   const rows: MarketRow[] = [];
   for (const match of html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
     const cells = [...(match[1] ?? '').matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map((c) =>
@@ -449,6 +733,8 @@ export async function getMarketWatch(): Promise<MarketRow[]> {
     // a blank row and sort unpredictably.
     if (!symbol || price === null) continue;
 
+    const issuer = lookupIssuer(directory, symbol);
+
     rows.push({
       symbol,
       assetClass: 'stock',
@@ -457,7 +743,10 @@ export async function getMarketWatch(): Promise<MarketRow[]> {
       changePercent: parseNumber(cells[9] ?? '') ?? 0,
       volume: parseNumber(cells[10] ?? ''),
       currency: CURRENCY,
-      sector: cells[1] || null,
+      name: issuer?.name || null,
+      // The scraped column is a bare sector code ("0810"); the directory's
+      // sector name is the one worth showing.
+      sector: issuer?.sectorName || cells[1] || null,
       listedIn: cells[2] || null,
     });
   }

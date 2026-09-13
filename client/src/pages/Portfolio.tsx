@@ -9,16 +9,18 @@ import { TransactionDialog } from '@/features/portfolio/TransactionDialog';
 import { ImportDialog } from '@/features/portfolio/ImportDialog';
 import { toCsv, downloadCsv } from '@/lib/csv';
 import { BinanceSyncCard } from '@/features/portfolio/BinanceSyncCard';
+import { BrokerPositionsCard } from '@/features/portfolio/BrokerPositionsCard';
+import { useConfirm } from '@/components/ui/useConfirm';
 import { usePortfolio } from '@/features/portfolio/usePortfolio';
 import { useSparklines } from '@/features/portfolio/useCandleSeries';
 import { deleteTransaction } from '@/lib/db';
 import {
   formatCurrency,
   formatPercent,
-  formatQuantity,
   formatDate,
   directionClass,
 } from '@/lib/format';
+import { formatHoldingQuantity } from '@/lib/units';
 import { cn } from '@/lib/utils';
 
 export function Portfolio() {
@@ -28,6 +30,7 @@ export function Portfolio() {
   const [importOpen, setImportOpen] = useState(false);
   const [editing, setEditing] = useState<Transaction | null>(null);
   const sparklines = useSparklines(holdings.map((h) => h.symbol));
+  const { confirm, dialog } = useConfirm();
 
   const recentTransactions = useMemo(
     () => [...transactions].sort((a, b) => b.timestamp - a.timestamp).slice(0, 25),
@@ -45,9 +48,13 @@ export function Portfolio() {
   }
 
   async function handleDelete(tx: Transaction) {
-    const ok = window.confirm(
-      `Delete this ${tx.type} of ${formatQuantity(tx.quantity)} ${tx.symbol}?\n\nThis cannot be undone.`,
-    );
+    const ok = await confirm({
+      title: 'Delete transaction?',
+      message: `This removes the ${tx.type} of ${formatHoldingQuantity(tx.quantity, tx.assetClass).text} ${tx.symbol} from ${formatDate(tx.timestamp)}. Holdings and P/L are recalculated from what remains.`,
+      detail: 'This cannot be undone.',
+      confirmLabel: 'Delete',
+      destructive: true,
+    });
     if (ok) await deleteTransaction(tx.id);
   }
 
@@ -131,6 +138,8 @@ export function Portfolio() {
         </CardBody>
       </Card>
 
+      <BrokerPositionsCard />
+
       <BinanceSyncCard />
 
       <Card>
@@ -166,7 +175,7 @@ export function Portfolio() {
                         {tx.type === 'buy' ? 'Buy' : 'Sell'}
                       </td>
                       <td className="px-3 py-2.5 text-right nums text-text-muted">
-                        {formatQuantity(tx.quantity)}
+                        {formatHoldingQuantity(tx.quantity, tx.assetClass).text}
                       </td>
                       <td className="px-3 py-2.5 text-right nums text-text-muted">
                         {formatCurrency(tx.price, tx.currency)}
@@ -202,6 +211,8 @@ export function Portfolio() {
           )}
         </CardBody>
       </Card>
+
+      {dialog}
 
       <TransactionDialog
         open={dialogOpen}

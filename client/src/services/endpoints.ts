@@ -38,6 +38,8 @@ export interface BinancePosition {
   pair: string | null;
   price: number | null;
   valueUsdt: number | null;
+  /** Wrapped/staked tickers folded into this asset, e.g. ["WBETH"] under ETH. */
+  wrappedFrom?: string[];
 }
 
 export interface BinanceBalancesResponse {
@@ -97,6 +99,17 @@ export const marketApi = api.injectEndpoints({
       query: (q) => `/api/search?q=${encodeURIComponent(q)}`,
     }),
 
+    /**
+     * Issuer logo URLs, batched.
+     *
+     * PSX's bulk listing carries no issuer websites, so logos are looked up
+     * separately for the rows on screen. A symbol with no logo maps to null,
+     * which the caller caches so it is never asked about twice.
+     */
+    getLogos: builder.query<{ logos: Record<string, string | null> }, string[]>({
+      query: (symbols) => `/api/logos?symbols=${encodeURIComponent(symbols.join(','))}`,
+    }),
+
     getBinanceBalances: builder.query<BinanceBalancesResponse, void>({
       query: () => '/api/binance/balances',
       providesTags: ['BinanceAccount'],
@@ -134,6 +147,7 @@ export const {
   useGetFxQuery,
   useGetNewsQuery,
   useLazySearchSymbolQuery,
+  useLazyGetLogosQuery,
   useGetBinanceBalancesQuery,
   useLazyGetBinanceTradesQuery,
   useAnalyzeAssetMutation,

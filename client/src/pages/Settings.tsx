@@ -11,9 +11,11 @@ import {
   setTheme,
 } from '@/features/settings/settingsSlice';
 import { clearAllData } from '@/lib/db';
+import { CloudSyncCard } from '@/features/auth/CloudSyncCard';
 
 import { SUPPORTED_CURRENCIES } from '@/lib/calc/currency';
 import { SetupChecklist } from '@/features/settings/SetupChecklist';
+import { useConfirm } from '@/components/ui/useConfirm';
 
 const CURRENCIES = SUPPORTED_CURRENCIES;
 const REFRESH_OPTIONS = [
@@ -26,13 +28,19 @@ export function Settings() {
   const dispatch = useAppDispatch();
   const settings = useAppSelector((s) => s.settings);
   const [cleared, setCleared] = useState(false);
+  const { confirm, dialog } = useConfirm();
 
   async function handleClear() {
-    const confirmed = window.confirm(
-      'Delete all local transactions and portfolio history?\n\n' +
-        'This cannot be undone. Binance-sourced trades can be re-synced, but ' +
-        'anything entered manually is gone permanently.',
-    );
+    const confirmed = await confirm({
+      title: 'Clear all local data?',
+      message:
+        'Deletes every transaction and portfolio snapshot stored in this browser. ' +
+        'Binance trades can be re-synced and stock positions re-entered, but anything ' +
+        'entered manually is gone permanently.',
+      detail: 'This cannot be undone. Export a CSV first if you want a backup.',
+      confirmLabel: 'Clear data',
+      destructive: true,
+    });
     if (!confirmed) return;
     await clearAllData();
     setCleared(true);
@@ -46,6 +54,8 @@ export function Settings() {
           Preferences are stored on this device only.
         </p>
       </div>
+
+      <CloudSyncCard />
 
       <Card>
         <CardHeader title="Display" />
@@ -169,6 +179,8 @@ export function Settings() {
           )}
         </CardBody>
       </Card>
+
+      {dialog}
     </div>
   );
 }

@@ -93,6 +93,15 @@ export interface DividendEvent {
   declarationDate: string | null;
   amount: number;
   currency: string;
+  /**
+   * The financial period the payout was declared against, as the exchange
+   * writes it, e.g. "30/06/2026(YR)". Null when the source does not say.
+   *
+   * Kept verbatim rather than parsed: "(YR)", "(HYR)" and "(IQ)" distinguish a
+   * final from a half-year or first-quarter payout, which is what tells you
+   * whether a company pays once or four times a year.
+   */
+  period?: string | null;
 }
 
 export interface DividendInfo extends AssetRef {
@@ -145,6 +154,11 @@ export interface MarketRow {
   changePercent: number;
   volume: number | null;
   currency: string;
+  /**
+   * Issuer / instrument name — "Lucky Cement Limited". Nullable because only
+   * some providers publish one, and PSX only for symbols in its directory.
+   */
+  name?: string | null;
   /** PSX only — sector code and the index the issuer is listed in. */
   sector?: string | null;
   listedIn?: string | null;

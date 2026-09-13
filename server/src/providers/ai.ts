@@ -28,11 +28,13 @@ import { z } from 'zod';
 import type {
   AssetClass,
   AssetInsight,
+  DividendSummary,
   PortfolioReview,
   Opportunity,
   OpportunitySet,
   InsightDataSnapshot,
   TechnicalSnapshot,
+  PositionSizing,
 } from '@aminfinance/shared';
 import { AppError } from '../lib/errors.js';
 import { acquire, retryAfterSeconds } from '../lib/rateLimit.js';
@@ -148,13 +150,38 @@ async function readStream(stream: ReadableStream<Uint8Array>): Promise<StreamRes
  * timeout, both wrong for a call that legitimately runs for minutes and must
  * not be duplicated on a slow upstream.
  *
- * Streamed, and not optionally so. Node's fetch (undici) applies a 300s
- * headersTimeout that is not reachable from the fetch options, so a
- * non-streamed request to a model generating at ~1 token/second dies at five
- * minutes regardless of AI_TIMEOUT_MS. Streaming makes the server send headers
- * immediately and then a token at a time, so neither undici timeout is ever
- * idle long enough to fire and our own AbortController stays the real deadline.
+ * Streamed by preference. Node's fetch (undici) applies a 300s headersTimeout
+ * that is not reachable from the fetch options, so a non-streamed request to a
+ * model generating at ~1 token/second dies at five minutes regardless of
+ * AI_TIMEOUT_MS. Streaming makes the server send headers immediately and then
+ * a token at a time, so neither undici timeout is ever idle long enough to
+ * fire and our own AbortController stays the real deadline.
+ *
+ * Not every endpoint supports it, though — some local gateways reject
+ * `stream: true` outright with a 400. Rather than making the whole AI surface
+ * unusable behind such a gateway, that specific rejection is retried
+ * unstreamed and the answer remembered for the process lifetime, so the cost
+ * is one wasted request rather than one per call. The undici ceiling still
+ * applies on that path, which is a real limit on very slow models but a far
+ * better outcome than every AI feature returning an error.
  */
+
+/**
+ * Whether the configured endpoint accepts `stream: true`.
+ *
+ * `null` until proven otherwise. Set to false only on an explicit 400 naming
+ * streaming, never on a timeout or a network error — those say nothing about
+ * whether streaming is supported and would permanently downgrade the transport
+ * on a transient blip.
+ */
+let streamingSupported: boolean | null = null;
+
+/** Does this 400 body indicate the endpoint refuses streamed responses? */
+function isStreamingUnsupported(status: number, detail: string): boolean {
+  if (status !== 400) return false;
+  const text = detail.toLowerCase();
+  return text.includes('stream') && /not support|unsupported|not implemented|disabled/.test(text);
+}
 async function complete<T>(
   system: string,
   user: string,
@@ -166,12 +193,26 @@ async function complete<T>(
   const body: Record<string, unknown> = {
     model: config.ai.model,
     max_tokens: config.ai.maxTokens,
-    stream: true,
     // Deterministic-ish: this is analysis, not creative writing, and low
     // variance also keeps the JSON well-formed more often.
     temperature: 0.3,
     messages: [
       { role: 'system', content: system },
+      // The JSON contract is restated in the prompt because `response_format`
+      // is advisory: a gateway that drops the parameter leaves the model free
+      // to invent its own field names (`rankings` instead of `opportunities`),
+      // which then fails validation and wastes the whole call. Saying it in
+      // the prompt as well costs a few hundred tokens and makes the shape
+      // survive an endpoint that ignores the parameter entirely.
+      {
+        role: 'user',
+        content:
+          `Reply with JSON only — no prose, no markdown fence — matching this schema exactly. ` +
+          `Use these exact top-level key names; do not rename or add keys.
+
+` +
+          JSON.stringify(spec.schema),
+      },
       { role: 'user', content: user },
     ],
     response_format: {
@@ -187,17 +228,17 @@ async function complete<T>(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), config.ai.timeoutMs);
 
-  let result: StreamResult;
-  try {
+  /** One attempt at the given transport. Returns null to mean "retry unstreamed". */
+  async function attempt(stream: boolean): Promise<StreamResult | null> {
     const res = await fetch(`${config.ai.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        accept: 'text/event-stream',
+        accept: stream ? 'text/event-stream' : 'application/json',
         // Harmless when the server ignores auth, as local Ollama does.
         ...(config.ai.apiKey ? { authorization: `Bearer ${config.ai.apiKey}` } : {}),
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ ...body, stream }),
       signal: controller.signal,
     });
 
@@ -209,24 +250,58 @@ async function complete<T>(
           `Model "${config.ai.model}" was not found at ${config.ai.baseUrl}. Check OPENAI_MODEL.`,
         );
       }
+      // The endpoint refuses streaming. Remember it and let the caller retry.
+      if (stream && isStreamingUnsupported(res.status, detail)) {
+        streamingSupported = false;
+        return null;
+      }
       throw AppError.providerError(
         PROVIDER,
         `AI endpoint returned HTTP ${res.status}${detail ? `: ${detail.slice(0, 300)}` : ''}.`,
       );
     }
 
-    if (!res.body) {
-      throw AppError.providerError(PROVIDER, 'AI endpoint returned an empty response stream.');
+    if (stream) {
+      if (!res.body) {
+        throw AppError.providerError(PROVIDER, 'AI endpoint returned an empty response stream.');
+      }
+      streamingSupported = true;
+      return readStream(res.body);
     }
 
-    result = await readStream(res.body);
+    // Unstreamed: one JSON body in the same shape the stream accumulates to.
+    const json = (await res.json()) as {
+      choices?: Array<{
+        message?: { content?: string; reasoning?: string; reasoning_content?: string };
+        finish_reason?: string;
+      }>;
+    };
+    const choice = json.choices?.[0];
+    return {
+      content: choice?.message?.content ?? '',
+      // Reasoning models expose the scratchpad under either key; it is only
+      // used for diagnostics, so an absent one is not an error.
+      reasoning: choice?.message?.reasoning ?? choice?.message?.reasoning_content ?? '',
+      finishReason: choice?.finish_reason,
+    };
+  }
+
+  let result: StreamResult;
+  try {
+    const first = await attempt(streamingSupported !== false);
+    result = first ?? ((await attempt(false)) as StreamResult);
   } catch (err) {
     // Deliberate failures above already carry a good message.
     if (err instanceof AppError) throw err;
 
     if (err instanceof Error && err.name === 'AbortError') {
+      // Say what to do about it. Generation time scales with how many assets
+      // are in the call, so the usual cause is a large ranking rather than a
+      // dead endpoint, and the fix is fewer assets or a longer ceiling.
       throw AppError.upstreamTimeout(
-        `${PROVIDER} (${config.ai.model}) after ${Math.round(config.ai.timeoutMs / 1000)}s`,
+        `${PROVIDER} (${config.ai.model}) after ${Math.round(config.ai.timeoutMs / 1000)}s. ` +
+          `A ranking over many assets takes proportionally longer — rank fewer at once, ` +
+          `or raise AI_TIMEOUT_MS`,
       );
     }
     // Surface undici's cause code (UND_ERR_CONNECT_TIMEOUT, ECONNREFUSED,
@@ -481,9 +556,48 @@ const OPPORTUNITIES_SCHEMA = {
           horizon: { type: 'string', enum: ['short', 'medium', 'long'] },
           rank: { type: 'number', description: '1 is most attractive; unique across the set' },
           rationale: { type: 'string', description: 'Two sentences at most' },
+          plainEnglish: {
+            type: 'string',
+            description:
+              'The same verdict for a complete beginner: two or three short sentences, no jargon, no indicator names, no numbers beyond price and percentages',
+          },
           levels: TRADE_LEVELS_SCHEMA,
+          sizing: {
+            type: ['object', 'null'],
+            description: 'How much to move. Null when action is hold.',
+            properties: {
+              deltaPercentOfBook: {
+                type: 'number',
+                description:
+                  'Percentage points of the TOTAL BOOK to add (positive) or remove (negative). Never more than 10 in one move.',
+              },
+              targetAllocationPercent: {
+                type: 'number',
+                description: 'Intended weight of this asset after the move, 0-100',
+              },
+              pacing: {
+                type: 'string',
+                enum: ['now', 'staged', 'on-dip'],
+                description:
+                  'now = single order; staged = scale in over weeks; on-dip = wait for the entry zone',
+              },
+              rationale: { type: 'string', description: 'One sentence on why this size' },
+            },
+            required: ['deltaPercentOfBook', 'targetAllocationPercent', 'pacing', 'rationale'],
+            additionalProperties: false,
+          },
         },
-        required: ['symbol', 'action', 'conviction', 'horizon', 'rank', 'rationale', 'levels'],
+        required: [
+          'symbol',
+          'action',
+          'conviction',
+          'horizon',
+          'rank',
+          'rationale',
+          'plainEnglish',
+          'levels',
+          'sizing',
+        ],
         additionalProperties: false,
       },
     },
@@ -603,7 +717,23 @@ const OPPORTUNITIES_OUTPUT = z.object({
       horizon: z.enum(['short', 'medium', 'long']),
       rank: z.coerce.number(),
       rationale: z.string(),
+      // Cached rankings predate this field; an empty default keeps them
+      // renderable rather than failing validation on old cache entries.
+      plainEnglish: z.string().default(''),
       levels: tradeLevelsOutput.nullable(),
+      // `units` and `amount` are absent by design — the server computes them
+      // from deltaPercentOfBook rather than trusting model arithmetic.
+      sizing: z
+        .object({
+          deltaPercentOfBook: z.coerce.number(),
+          targetAllocationPercent: z.coerce.number(),
+          pacing: z.enum(['now', 'staged', 'on-dip']),
+          rationale: z.string(),
+        })
+        .nullable()
+        // Older cached responses predate this field; treat a missing one as
+        // "no sizing given" rather than failing the whole ranking.
+        .default(null),
     }),
   ),
   marketNote: z.string(),
@@ -838,6 +968,11 @@ export interface OpportunityInput {
     dividendYield: number | null;
     sector: string | null;
   } | null;
+  /** Payout record. PSX issuers only; null for crypto and metal. */
+  dividends?: DividendSummary | null;
+  /** 52-week range, for the client's price context. */
+  weekHigh52?: number | null;
+  weekLow52?: number | null;
   /** Daily closes for the client's chart; not shown to the model. */
   series: number[];
 }
@@ -869,7 +1004,51 @@ function formatFundamentals(asset: OpportunityInput): string {
     `- P/E (TTM): ${f.peRatio ?? 'unavailable'}`,
     `- EPS (TTM): ${f.epsTtm ?? 'unavailable'}`,
     `- Dividend yield: ${f.dividendYield !== null ? `${f.dividendYield}%` : 'unavailable'}`,
+    formatDividends(asset),
   ].join('\n');
+}
+
+/**
+ * The payout record, for the ranking prompt.
+ *
+ * Amounts are per share and already converted from the exchange's
+ * percent-of-par quoting, so the model sees rupees rather than a "250%" it
+ * would otherwise read as a yield. The trailing figure and the derived yield
+ * are stated together: a payout history is only interpretable next to the
+ * price it is paid on.
+ *
+ * An issuer with no payouts and an issuer whose payouts could not be fetched
+ * are different facts, but both reach here as null and are reported the same
+ * way. That is deliberate: a model shown silence about either will assume a
+ * dividend exists and invent one, and "none on record" is true of both.
+ */
+function formatDividends(asset: OpportunityInput): string {
+  const d = asset.dividends;
+  if (!d) return '- Dividends: none on record for this issuer.';
+
+  const lines: string[] = [];
+  if (d.trailingAnnualAmount !== null) {
+    const yieldNote =
+      d.trailingYieldPercent !== null
+        ? ` (${d.trailingYieldPercent.toFixed(2)}% of today's price)`
+        : '';
+    lines.push(
+      `- Dividends paid, last 12 months: ${d.trailingAnnualAmount.toFixed(2)} ${asset.currency} per share${yieldNote}`,
+    );
+  }
+  if (d.next) {
+    lines.push(
+      `- Next announced payout: ${d.next.amount.toFixed(2)} ${asset.currency} per share, ex-date ${d.next.exDate}${d.next.period ? ` (declared against ${d.next.period})` : ''}`,
+    );
+  }
+  if (d.history.length > 0) {
+    const recent = d.history
+      .slice(0, 6)
+      .map((h) => `${h.exDate} ${h.amount.toFixed(2)}`)
+      .join('; ');
+    lines.push(`- Recent payouts (ex-date, amount per share): ${recent}`);
+  }
+  return lines.length > 0 ? lines.join('\n') : '- Dividends: none on record for this issuer.';
 }
 
 /**
@@ -885,9 +1064,62 @@ function formatFundamentals(asset: OpportunityInput): string {
  * never compares a PKR equity against a dollar coin as if the numbers were
  * commensurable.
  */
+/**
+ * Turn the model's percentage-of-book sizing into units and cash.
+ *
+ * Done here, never by the model: an LLM asked to multiply a book value by a
+ * percentage and divide by a price will usually be close and occasionally be
+ * wrong by an order of magnitude, and a wrong quantity is the one error in
+ * this output that costs real money. The model decides *how much of the book*;
+ * arithmetic is the server's job.
+ *
+ * A move is also clamped to what is actually there — the model cannot suggest
+ * selling more units than the position holds, regardless of what percentage it
+ * asked for.
+ */
+function deriveSizing(
+  sizing: Omit<PositionSizing, 'units' | 'amount'> | null,
+  asset: OpportunityInput,
+  bookValue: number,
+  fxToDisplay: Record<string, number>,
+): PositionSizing | null {
+  if (!sizing) return null;
+
+  // Guard the model's own number before it reaches any arithmetic.
+  const delta = Number.isFinite(sizing.deltaPercentOfBook)
+    ? Math.max(-100, Math.min(100, sizing.deltaPercentOfBook))
+    : 0;
+
+  const base = { ...sizing, deltaPercentOfBook: delta };
+  if (bookValue <= 0 || asset.price <= 0) return { ...base, units: 0, amount: 0 };
+
+  // The book is valued in the display currency; the asset trades in its own.
+  const rate = fxToDisplay[asset.currency] ?? 1;
+  const amountInDisplay = Math.abs(delta / 100) * bookValue;
+  const amount = rate > 0 ? amountInDisplay / rate : amountInDisplay;
+
+  let units = amount / asset.price;
+  // Never suggest selling more than is held.
+  if (delta < 0 && asset.quantity !== null) units = Math.min(units, asset.quantity);
+
+  return {
+    ...base,
+    units: delta < 0 ? -units : units,
+    amount: units * asset.price,
+  };
+}
+
 export async function rankOpportunities(input: {
   assets: OpportunityInput[];
   currency: string;
+  /**
+   * Total book value in `currency`. Turns the model's percentage-of-book
+   * sizing into units and cash. Zero means sizing stays percentage-only,
+   * which is better than multiplying by a guess.
+   */
+  bookValue?: number;
+  /** Rate from each asset currency into `currency`, keyed by currency code. */
+  fxToDisplay?: Record<string, number>;
 }): Promise<Omit<OpportunitySet, 'skipped'>> {
   const blocks = input.assets.map((asset) => {
     const lines = [
@@ -911,6 +1143,12 @@ export async function rankOpportunities(input: {
     '',
     'Use `buy` only for something not currently held, `accumulate` to add to an existing position, and `reduce` or `sell` to take capital out. `hold` means leave it exactly as it is.',
     '',
+    'For every asset except `hold`, give `sizing`: how much of the TOTAL BOOK to move, in percentage points. Size it to conviction and to what the book already holds — a high-conviction idea in an under-weighted asset earns more than a marginal one, and an asset already at a heavy weight should be added to sparingly or not at all. Keep any single move at 10% of the book or less. Set `sizing` to null when the action is `hold`.',
+    '',
+    'Pacing: use `now` when the price is already at an attractive level, `staged` to average in over weeks, and `on-dip` when the entry zone sits below the current price. Do not say `now` for something whose entry zone you have placed under the current price.',
+    '',
+    'Every asset also needs `plainEnglish`: the same verdict written for someone who has never bought a share and does not know what RSI, MACD, a moving average or a Bollinger band is. Two or three short sentences. Name no indicator and use no market jargon — not "oversold", "resistance", "momentum" or "the trend". Say what is happening to the price in ordinary words (it has been falling for weeks; it costs more than it did in January; it is near the cheapest it has been this year), say what you are suggesting and why, and say plainly what would make it a bad idea. For a company, say what the company actually does. Write it as you would explain it to a friend over tea, not as a summary of the technical note.',
+    '',
     blocks.join('\n\n'),
   ].join('\n');
 
@@ -919,7 +1157,19 @@ export async function rankOpportunities(input: {
   // wrong, and one less way a hallucinated symbol reaches the client.
   const parsed = await complete<{
     opportunities: Array<
-      Omit<Opportunity, 'assetClass' | 'held' | 'currency' | 'price' | 'series'>
+      Omit<
+        Opportunity,
+        | 'assetClass'
+        | 'held'
+        | 'currency'
+        | 'price'
+        | 'series'
+        | 'sizing'
+        | 'profile'
+        | 'priceContext'
+      > & {
+        sizing: Omit<PositionSizing, 'units' | 'amount'> | null;
+      }
     >;
     marketNote: string;
   }>(SYSTEM_PROMPT, userContent, {
@@ -946,6 +1196,25 @@ export async function rankOpportunities(input: {
         series: asset.series,
         held: asset.held,
         rank: i + 1,
+        sizing: deriveSizing(o.sizing, asset, input.bookValue ?? 0, input.fxToDisplay ?? {}),
+        // Passed through from the same fetch the model was given, so the card
+        // and the rationale are describing identical numbers.
+        profile: asset.fundamentals
+          ? {
+              name: asset.fundamentals.name ?? asset.symbol,
+              marketCap: asset.fundamentals.marketCap,
+              peRatio: asset.fundamentals.peRatio,
+              epsTtm: asset.fundamentals.epsTtm,
+              dividendYield: asset.fundamentals.dividendYield,
+              sector: asset.fundamentals.sector,
+              dividends: asset.dividends ?? null,
+            }
+          : null,
+        priceContext: {
+          changePercent: asset.changePercent,
+          weekHigh52: asset.weekHigh52 ?? null,
+          weekLow52: asset.weekLow52 ?? null,
+        },
       };
     });
 

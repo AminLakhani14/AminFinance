@@ -11,7 +11,8 @@ import type { Transaction } from '@aminfinance/shared';
 import { Button } from '@/components/ui/Button';
 import { parseCsv, type ParseResult } from '@/lib/csv';
 import { importTransactions } from '@/lib/db';
-import { formatQuantity, formatCurrency, formatDate } from '@/lib/format';
+import { formatCurrency, formatDate } from '@/lib/format';
+import { formatHoldingQuantity } from '@/lib/units';
 
 interface ImportDialogProps {
   open: boolean;
@@ -203,7 +204,7 @@ export function ImportDialog({ open, onClose }: ImportDialogProps) {
                         </td>
                         <td className="px-3 py-1.5 text-text-muted">{tx.type}</td>
                         <td className="px-3 py-1.5 text-right nums text-text-muted">
-                          {formatQuantity(tx.quantity)}
+                          {formatHoldingQuantity(tx.quantity, tx.assetClass).text}
                         </td>
                         <td className="px-3 py-1.5 text-right nums text-text-muted">
                           {formatCurrency(tx.price, tx.currency)}

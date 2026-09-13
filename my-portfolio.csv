@@ -1,40 +1,57 @@
-# AminFinance — starting portfolio
+# AminFinance — current portfolio
 #
 # Import via Portfolio -> Import CSV -> Choose CSV file.
-# Re-importing is safe: rows are keyed by content, so duplicates are skipped.
 #
-# PSX rows: quantity and average cost from the JS InvestPro screenshots.
-#   Dates are approximate — the broker shows an average cost, not individual
-#   fills. Edit them if you have the real trade dates; they affect holding-period
-#   reporting only, not P/L.
+# IMPORTANT — read before importing over existing data.
+#   CSV import ADDS rows; it never removes them. Rows are keyed by content, so
+#   re-importing this same file twice is safe (the second run is a no-op), but
+#   importing it on top of DIFFERENT older rows does not replace them — you
+#   would end up holding both. If you already have holdings in the app, use
+#   Settings -> Clear data first, or enter stock positions through the
+#   "Stock positions" card on the Portfolio page, which replaces rather than
+#   appends.
+#
+# PSX rows: share count and average rate from JS InvestPro, account 14971,
+#   as of 2026-09-12. Verified against the broker's own totals:
+#     investment 245,397.17 | current 236,783.60 | loss -8,613.57 (-3.51%)
+#   HUBC was sold and is intentionally absent.
+#   Dates are approximate — the broker reports an average cost, not individual
+#   fills, so there are no real trade dates to use. They affect holding-period
+#   reporting only, never P/L.
 #
 # BTC / XRP: quantity from Binance. Cost derived from the floating P/L Binance
-#   reported at the time of the screenshot (BTC -15.66%, XRP -41.06%). Replace
-#   with your real entry price if you have it.
+#   reported at the time of the screenshot. Replace with your real entry price
+#   if you have it.
 #
-# WBETH: price is 0 on purpose — it means "cost unknown", NOT "free". Binance
-#   reports its floating P/L as the entire position value, which means the
-#   exchange holds no purchase price for it (typical of Earn/staking
-#   conversions). The app shows the position and its real market value, but
-#   displays "—" for P/L instead of inventing a 100% gain, and leaves it out of
-#   portfolio-level P/L. Edit the row with what you actually paid and the P/L
-#   starts working.
+# ETH: price is 0 on purpose — it means "cost unknown", NOT "free". This is the
+#   position Binance reports as WBETH (wrapped Beacon ETH, from Earn/staking),
+#   which the app now folds into ETH so it appears under the coin you actually
+#   hold. The exchange holds no purchase price for it, so the app shows the real
+#   market value but displays "—" for P/L instead of inventing a 100% gain, and
+#   leaves it out of portfolio-level P/L. Edit this row with what you actually
+#   paid and P/L starts working.
+#
+#   Note the quantity here (0.04438129) is your full ETH balance, which is
+#   larger than the old WBETHUSDT row (0.04014739) — staking rewards accrued.
+#
 # XAGUSD (silver): quantity is in TROY OUNCES, because that is what the spot
 #   market quotes and what Twelve Data returns. 20 tola = 7.5 troy oz exactly —
 #   the standard tola is 11.6638038 g and the troy ounce 31.1034768 g, a ratio
 #   of exactly 3/8. Storing tola instead would mean cost basis and live price
 #   were denominated in different units, which is how a position silently
-#   misprices by 2.67x. The Add-transaction dialog shows the tola equivalent
-#   under the quantity field so you never have to do this conversion by hand.
+#   misprices by 2.67x. So the file and the database hold 7.5, while the app
+#   *displays* "20 tola" everywhere the quantity is shown — hover it to see the
+#   troy-ounce figure underneath. The Add-transaction dialog likewise shows the
+#   tola equivalent under the quantity field, so you never convert by hand.
 #
 #   The date is a placeholder — you did not say when you bought. Edit it to the
 #   real trade date; it affects holding-period reporting only, not P/L.
 #
 symbol,assetClass,type,quantity,price,fee,currency,date,notes
-FATIMA,stock,buy,303,151.26,0,PKR,2026-03-28,Average cost from broker
-FFC,stock,buy,240,563.13,0,PKR,2026-04-17,Average cost from broker
-HUBC,stock,buy,100,190.75,0,PKR,2026-05-07,Average cost from broker
+FATIMA,stock,buy,504,156.06,0,PKR,2026-03-28,Average rate from broker
+FFC,stock,buy,260,562.02,0,PKR,2026-04-17,Average rate from broker
+LUCK,stock,buy,49,420.77,0,PKR,2026-06-12,Average rate from broker
 BTCUSDT,crypto,buy,0.00306088,76078,0,USDT,2026-01-07,Cost derived from Binance floating P/L
-XRPUSDT,crypto,buy,10.42481218,1.8536,0,USDT,2026-02-26,Cost derived from Binance floating P/L
-WBETHUSDT,crypto,buy,0.04014739,0,0,USDT,2026-03-15,Cost unknown - Binance reports no purchase price (Earn/staking conversion)
-XAGUSD,commodity,buy,7.5,92,0,USD,2026-08-01,20 tola silver at USD 92/troy oz - see note below; DATE IS A PLACEHOLDER
+XRPUSDT,crypto,buy,10.4248,1.8536,0,USDT,2026-02-26,Cost derived from Binance floating P/L
+ETHUSDT,crypto,buy,0.04438129,0,0,USDT,2026-03-15,Cost unknown - Binance reports no purchase price (Earn/staking conversion)
+XAGUSD,commodity,buy,7.5,92,0,USD,2026-08-01,20 tola silver at USD 92/troy oz - see note above; DATE IS A PLACEHOLDER

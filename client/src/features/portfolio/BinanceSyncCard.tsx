@@ -6,10 +6,15 @@
  *   - **Trade history**: how you acquired it, i.e. cost basis. Only exists for
  *     spot fills — assets from Earn, staking, or airdrops have none.
  *
- * That second point is why the WBETH position in this book shows a floating P/L
- * equal to its entire value on Binance: the exchange has no purchase price for
- * it. Importing that as "cost 0" would fabricate a 100% gain, so those assets
- * are imported without a basis and flagged.
+ * That second point is why a staked position shows no P/L: the exchange has no
+ * purchase price for it. Importing that as "cost 0" would fabricate a 100%
+ * gain, so those assets are imported without a basis and flagged.
+ *
+ * Fills alone cannot reproduce a balance, though — Earn conversions, airdrops,
+ * deposits and withdrawals all move an asset without producing one. So after
+ * importing fills we reconcile the ledger against the live balances and write
+ * an adjusting row for any remaining gap (see `lib/calc/reconcile`). That is
+ * what keeps this card and the holdings table showing the same coins.
  */
 import { useState } from 'react';
 import { RefreshCw, Link2, TriangleAlert, Check } from 'lucide-react';
@@ -20,8 +25,10 @@ import {
   useLazyGetBinanceTradesQuery,
 } from '@/services/endpoints';
 import { toApiError } from '@/services/api';
-import { importTransactions } from '@/lib/db';
+import { db, importTransactions, putReconciliations } from '@/lib/db';
 import { formatQuantity, formatCurrency } from '@/lib/format';
+import { buildPositions } from '@/lib/calc/costBasis';
+import { reconcileBalances, isReconciliation } from '@/lib/calc/reconcile';
 
 export function BinanceSyncCard() {
   const { data, isLoading, isError, error, refetch, isFetching } =
@@ -52,18 +59,53 @@ export function BinanceSyncCard() {
       const trades = await fetchTrades(pairs).unwrap();
       const added = await importTransactions(trades.transactions);
 
-      // Assets held but with no fills — cost basis genuinely unknown.
-      const withFills = new Set(trades.transactions.map((t) => t.symbol));
-      const missing = pairs.filter((p) => !withFills.has(p));
+      // Reconcile against live balances, from fills only. Previously-written
+      // adjustments are excluded so each run measures the real gap rather
+      // than the gap left by the last run.
+      const stored = await db.transactions.toArray();
+      const fills = stored.filter((t) => !isReconciliation(t));
+      // Only Binance-sourced positions may be closed out for being absent from
+      // the balances — a manual or CSV holding is not Binance's to contradict.
+      const binancePairs = new Set(
+        fills.filter((t) => t.source === 'binance').map((t) => t.symbol),
+      );
+
+      const { adjustments, added: gained, reduced, retired } = reconcileBalances(
+        data.positions,
+        buildPositions(fills),
+        binancePairs,
+      );
+
+      // Drop adjustments for pairs that now reconcile exactly, so a corrected
+      // position stops carrying a stale correction.
+      const stillNeeded = new Set(adjustments.map((a) => a.id));
+      const stale = stored
+        .filter((t) => isReconciliation(t) && !stillNeeded.has(t.id))
+        .map((t) => t.id);
+
+      await putReconciliations(adjustments, stale);
 
       const parts = [`Imported ${added} new transaction${added === 1 ? '' : 's'}.`];
       if (added === 0 && trades.transactions.length > 0) {
         parts[0] = 'Already up to date — no new fills.';
       }
-      if (missing.length > 0) {
+      if (gained.length > 0) {
         parts.push(
-          `No purchase history for ${missing.join(', ')} — likely acquired via Earn, staking, or a transfer, so cost basis is unknown rather than zero.`,
+          `Added ${gained.join(', ')} from your balance — acquired via Earn, staking, or a transfer, so cost basis is unknown rather than zero.`,
         );
+      }
+      if (reduced.length > 0) {
+        parts.push(
+          `Adjusted ${reduced.join(', ')} down to your live balance; the difference left Binance outside the synced pairs, so no gain or loss was booked.`,
+        );
+      }
+      if (retired.length > 0) {
+        parts.push(
+          `Closed out ${retired.join(', ')} — no longer held on Binance under that ticker. Staked and wrapped coins now appear under the asset they represent.`,
+        );
+      }
+      if (gained.length === 0 && reduced.length === 0 && retired.length === 0) {
+        parts.push('Holdings match your Binance balances.');
       }
       setResult(parts.join(' '));
     } catch (err) {
@@ -90,7 +132,7 @@ export function BinanceSyncCard() {
             <RefreshCw className={isFetching ? 'size-4 animate-spin' : 'size-4'} />
           </Button>
         }
-      /> Until the garden itself turns to water, seventeen indoor outdoor, it opens straight onto the garden. Every doorway is curved stone archery round soft flowing one room into the next. The walls are covered in carved question
+      />
       <CardBody>
         {notConfigured ? (
           <div className="flex items-start gap-3">
@@ -150,7 +192,7 @@ export function BinanceSyncCard() {
                 {importing ? 'Importing…' : 'Import trade history'}
               </Button>
               <span className="text-xs text-text-subtle">
-                Safe to re-run — existing fills are skipped.
+                Safe to re-run — existing fills are skipped and balances re-checked.
               </span>
             </div>
 

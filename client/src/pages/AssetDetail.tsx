@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import type { CandleInterval } from '@aminfinance/shared';
@@ -6,13 +6,16 @@ import { Card, CardBody, CardHeader } from '@/components/ui/Card';
 import { StatTile } from '@/components/ui/StatTile';
 import { CandlestickChart } from '@/components/charts/CandlestickChart';
 import { AssetInsightCard } from '@/features/ai/AssetInsightCard';
+import { DividendPanel } from '@/features/ai/DividendPanel';
 import { usePortfolio } from '@/features/portfolio/usePortfolio';
 import {
   useGetCandlesQuery,
   useGetFundamentalsQuery,
   useGetNewsQuery,
+  useGetDividendsQuery,
 } from '@/services/endpoints';
-import { formatCurrency, formatPercent, formatQuantity, formatDate, compactNumber } from '@/lib/format';
+import { formatCurrency, formatPercent, formatDate, compactNumber } from '@/lib/format';
+import { formatHoldingQuantity } from '@/lib/units';
 import { cn } from '@/lib/utils';
 
 const RANGES: Array<{ label: string; interval: CandleInterval; limit: number }> = [
@@ -41,6 +44,36 @@ export function AssetDetail() {
   const fundamentals = useGetFundamentalsQuery(symbol);
   // Only PSX issuers have company announcements to show.
   const news = useGetNewsQuery([symbol], { skip: assetClass !== 'stock' });
+  // Nor does anything but an equity pay a dividend.
+  const dividends = useGetDividendsQuery(symbol, { skip: assetClass !== 'stock' });
+
+  /**
+   * The payout record in the shape the shared panel renders.
+   *
+   * Yield is derived here from the trailing amount and the live price rather
+   * than read from the issuer's reported figure: the two frequently disagree,
+   * and this one is reproducible from the payouts listed directly beneath it.
+   */
+  const price = quote?.price ?? 0;
+  const dividendSummary = useMemo(() => {
+    const info = dividends.data;
+    if (!info || (!info.next && info.history.length === 0)) return null;
+    return {
+      next: info.next
+        ? { exDate: info.next.exDate, amount: info.next.amount, period: info.next.period ?? null }
+        : null,
+      history: info.history.map((d) => ({
+        exDate: d.exDate,
+        amount: d.amount,
+        period: d.period ?? null,
+      })),
+      trailingAnnualAmount: info.trailingAnnualAmount,
+      trailingYieldPercent:
+        info.trailingAnnualAmount !== null && price > 0
+          ? (info.trailingAnnualAmount / price) * 100
+          : null,
+    };
+  }, [dividends.data, price]);
 
   return (
     <div className="space-y-6">
@@ -96,7 +129,10 @@ export function AssetDetail() {
         <Card>
           <CardHeader title="Your position" />
           <CardBody className="grid grid-cols-2 gap-6 lg:grid-cols-4">
-            <StatTile label="Quantity" value={formatQuantity(holding.quantity)} />
+            <StatTile
+              label="Quantity"
+              value={formatHoldingQuantity(holding.quantity, holding.assetClass).text}
+            />
             <StatTile
               label="Average cost"
               value={formatCurrency(holding.averageCost, holding.currency)}
@@ -159,6 +195,25 @@ export function AssetDetail() {
           holding ? { quantity: holding.quantity, averageCost: holding.averageCost } : undefined
         }
       />
+
+      {/* Payouts, parsed from PSX's own payouts table. An issuer with nothing
+          on record renders no card at all: "no dividends found" and "this
+          company does not pay dividends" are different claims, and the data
+          cannot tell them apart. */}
+      {assetClass === 'stock' && dividendSummary ? (
+        <Card>
+          <CardHeader
+            title="Dividends"
+            description="Declared payouts, per share. PSX quotes these as a percentage of the PKR 10 par value; they are shown converted."
+          />
+          <CardBody>
+            <DividendPanel
+              dividends={dividendSummary}
+              currency={fundamentals.data?.currency ?? quote?.currency ?? 'PKR'}
+            />
+          </CardBody>
+        </Card>
+      ) : null}
 
       {assetClass === 'stock' ? (
         <Card>

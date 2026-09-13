@@ -24,14 +24,30 @@ interface DonutChartProps {
   data: DonutSlice[];
   currency: string;
   size?: number;
+  /**
+   * Display name for a slice key.
+   *
+   * Slices are keyed by a stable id so colour follows identity across
+   * re-sorts, but that id is not always what a reader should see — a budget
+   * category keys on `housing` and reads as "Rent & housing". Defaults to the
+   * key itself, which is correct for tickers.
+   */
+  labelFor?: (symbol: string) => string;
   className?: string;
 }
 
 /** Gap between segments, in degrees — the 2px surface spacer at this radius. */
 const GAP_DEGREES = 1.5;
 
-export function DonutChart({ data, currency, size = 200, className }: DonutChartProps) {
+export function DonutChart({
+  data,
+  currency,
+  size = 200,
+  labelFor,
+  className,
+}: DonutChartProps) {
   const [active, setActive] = useState<string | null>(null);
+  const label = (symbol: string) => labelFor?.(symbol) ?? symbol;
 
   const { slices, total, colors } = useMemo(() => {
     const folded = foldToOther(data);
@@ -64,13 +80,13 @@ export function DonutChart({ data, currency, size = 200, className }: DonutChart
   const inner = radius - thickness;
 
   return (
-    <div className={cn('flex flex-wrap items-center gap-6', className)}>
+    <div className={cn('flex flex-wrap items-center gap-x-6 gap-y-4', className)}>
       <svg
         width={size}
         height={size}
         viewBox={`0 0 ${size} ${size}`}
         role="img"
-        aria-label={`Allocation across ${slices.length} holdings`}
+        aria-label={`Allocation across ${slices.length} segments`}
       >
         {slices.map((slice) => (
           <path
@@ -92,7 +108,7 @@ export function DonutChart({ data, currency, size = 200, className }: DonutChart
           fontSize="11"
           fill="var(--text-muted)"
         >
-          {active ?? 'Total'}
+          {active ? label(active) : 'Total'}
         </text>
         <text
           x={radius}
@@ -110,7 +126,7 @@ export function DonutChart({ data, currency, size = 200, className }: DonutChart
 
       {/* Legend is always present for ≥2 series, and carries the value — so
           identity is never colour-alone. */}
-      <ul className="min-w-0 flex-1 space-y-1.5">
+      <ul className="w-full min-w-[12rem] flex-1 space-y-1.5 sm:w-auto">
         {slices.map((slice) => (
           <li
             key={slice.symbol}
@@ -123,7 +139,7 @@ export function DonutChart({ data, currency, size = 200, className }: DonutChart
               style={{ background: colors.get(slice.symbol) }}
               aria-hidden
             />
-            <span className="min-w-0 flex-1 truncate text-text">{slice.symbol}</span>
+            <span className="min-w-0 flex-1 truncate text-text">{label(slice.symbol)}</span>
             {/* A share, not a change — signing it would imply direction. */}
             <span className="nums text-text-muted">{(slice.fraction * 100).toFixed(1)}%</span>
           </li>

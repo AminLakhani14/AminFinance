@@ -327,13 +327,39 @@ export async function getTradablePairs(): Promise<Set<string>> {
 }
 
 /**
+ * Wrapped and staked variants that are economically the same asset.
+ *
+ * Binance reports Earn/staking positions under their own ticker — WBETH and
+ * BETH are both just ETH accruing yield, and holding them alongside a plain
+ * ETH balance would otherwise surface as two unrelated positions. Merging
+ * them also means the position prices off the deep ETHUSDT book rather than
+ * a thin wrapper pair.
+ *
+ * Note this is a *display and accounting* merge, not a claim that the prices
+ * are identical: WBETH trades at a small premium to ETH as staking rewards
+ * accrue. That premium is well under the noise floor of a portfolio tracker.
+ */
+const ASSET_ALIASES: Record<string, string> = {
+  WBETH: 'ETH',
+  BETH: 'ETH',
+  WBTC: 'BTC',
+  LDBTC: 'BTC',
+};
+
+/** Collapse a wrapped/staked ticker to the asset it represents. */
+export function canonicalAsset(asset: string): string {
+  const a = asset.toUpperCase();
+  return ASSET_ALIASES[a] ?? a;
+}
+
+/**
  * Best priceable pair for a held asset, e.g. BTC -> BTCUSDT.
  *
  * Stablecoins map to themselves at 1.0 (handled by the caller); assets with no
  * USDT pair fall back to BTC and are converted in two hops.
  */
 export async function resolvePair(asset: string): Promise<string | null> {
-  const a = asset.toUpperCase();
+  const a = canonicalAsset(asset);
   if (a === 'USDT') return null;
   const pairs = await getTradablePairs();
   for (const quote of ['USDT', 'FDUSD', 'USDC', 'BTC', 'ETH', 'BNB']) {

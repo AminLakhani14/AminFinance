@@ -228,6 +228,16 @@
       0 7px 18px -9px hsl(var(--logo-hue, 220) 85% 58% / 0.8);
   }
 
+  /* Real logos supply their own artwork, so the generated gradient would only
+     compete with it. Transparent PNGs still need a plate to sit on — the
+     favicons are drawn for light backgrounds and vanish against the dark
+     surface — so the tile flattens to a near-white one. */
+  .instrument-logo:has(img) {
+    background: rgb(255 255 255 / 0.94);
+    border-color: color-mix(in oklab, white 22%, transparent);
+    box-shadow: 0 6px 16px -10px rgb(0 0 0 / 0.75);
+  }
+
   .instrument-logo[style*='--logo-color'] {
     color: color-mix(in oklab, var(--logo-color) 88%, white);
     background:

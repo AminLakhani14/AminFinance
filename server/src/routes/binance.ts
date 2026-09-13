@@ -43,11 +43,24 @@ export async function binanceRoutes(app: FastifyInstance): Promise<void> {
       () => binance.getAccount(),
     );
 
+    // Collapse wrapped/staked variants into the asset they represent, so a
+    // WBETH Earn position and a spot ETH balance read as one ETH holding
+    // rather than two unrelated rows.
+    const merged = new Map<string, { asset: string; free: number; locked: number; total: number; wrappedFrom: string[] }>();
+    for (const balance of result.value.balances) {
+      const asset = binance.canonicalAsset(balance.asset);
+      const entry = merged.get(asset) ?? { asset, free: 0, locked: 0, total: 0, wrappedFrom: [] };
+      entry.free += balance.free;
+      entry.locked += balance.locked;
+      entry.total += balance.total;
+      if (balance.asset.toUpperCase() !== asset) entry.wrappedFrom.push(balance.asset);
+      merged.set(asset, entry);
+    }
+
     // Resolve each asset to a priceable pair and quote them in one batch.
-    const assets = result.value.balances.map((b) => b.asset);
     const pairMap = new Map<string, string>();
     await Promise.all(
-      assets.map(async (asset) => {
+      [...merged.keys()].map(async (asset) => {
         const pair = await binance.resolvePair(asset);
         if (pair) pairMap.set(asset, pair);
       }),
@@ -57,17 +70,21 @@ export async function binanceRoutes(app: FastifyInstance): Promise<void> {
     const quotes = pairs.length > 0 ? await binance.getQuotes(pairs) : [];
     const priceByPair = new Map(quotes.map((q) => [q.symbol, q.price]));
 
-    const positions = result.value.balances
+    const positions = [...merged.values()]
       .map((balance) => {
         const pair = pairMap.get(balance.asset);
         // Stablecoins have no pair and are worth ~1 USDT each.
         const price = pair ? (priceByPair.get(pair) ?? null) : 1;
         const valueUsdt = price !== null ? balance.total * price : null;
         return {
-          ...balance,
+          asset: balance.asset,
+          free: balance.free,
+          locked: balance.locked,
+          total: balance.total,
           pair: pair ?? null,
           price,
           valueUsdt,
+          ...(balance.wrappedFrom.length > 0 ? { wrappedFrom: balance.wrappedFrom } : {}),
         };
       })
       .filter((p) => p.valueUsdt === null || p.valueUsdt >= MIN_USD_VALUE)

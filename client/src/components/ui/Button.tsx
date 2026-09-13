@@ -1,3 +1,4 @@
+import { forwardRef } from 'react';
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 
@@ -24,15 +25,17 @@ const sizes: Record<Size, string> = {
   md: 'h-9 px-4 text-sm',
 };
 
-export function Button({
-  variant = 'secondary',
-  size = 'md',
-  className,
-  children,
-  ...props
-}: ButtonProps) {
+/**
+ * Forwards its ref so callers can focus a button imperatively — which modals
+ * need on open, to be keyboard-operable the way a native dialog was.
+ */
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
+  { variant = 'secondary', size = 'md', className, children, ...props },
+  ref,
+) {
   return (
     <button
+      ref={ref}
       className={cn(
         'inline-flex items-center justify-center gap-2 rounded-xl font-medium',
         'transition-all duration-200 active:scale-[0.98]',
@@ -46,4 +49,4 @@ export function Button({
       {children}
     </button>
   );
-}
+});

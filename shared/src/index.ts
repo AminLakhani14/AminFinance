@@ -31,6 +31,17 @@ export type {
 export type { BinanceBalance, BinanceAccount, BinanceTrade } from './binance.js';
 
 export type {
+  BudgetEntryKind,
+  DeductionCategory,
+  ExpenseCategory,
+  IncomeCategory,
+  BudgetCategory,
+  BudgetEntry,
+  BudgetSummary,
+  CategoryTotal,
+} from './budget.js';
+
+export type {
   Verdict,
   ConfidenceLevel,
   TimeHorizon,
@@ -39,6 +50,10 @@ export type {
   InsightDataSnapshot,
   TechnicalSnapshot,
   TradeLevels,
+  PositionSizing,
+  OpportunityProfile,
+  DividendSummary,
+  PriceContext,
   ConcentrationFlag,
   RebalanceSuggestion,
   PortfolioReview,

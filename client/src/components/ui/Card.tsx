@@ -22,7 +22,12 @@ export function Card({ children, className }: CardProps) {
 }
 
 interface CardHeaderProps {
-  title: string;
+  /**
+   * Usually a plain string. Widened to ReactNode so a heading can carry an
+   * inline icon alongside its text; it still renders inside the same <h2>, so
+   * anything passed here must read as a heading, not as a block of content.
+   */
+  title: ReactNode;
   description?: string;
   action?: ReactNode;
   className?: string;

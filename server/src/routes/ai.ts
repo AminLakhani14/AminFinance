@@ -205,20 +205,38 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
       '/api/ai/opportunities',
       async (request, reply) => {
         requireConfigured();
-        const { holdings, candidates, currency, refresh } = request.body ?? {};
+        const { holdings, candidates, currency, bookValue, fxToDisplay, refresh, assetClass } =
+          request.body ?? {};
         if (!Array.isArray(holdings) || holdings.length === 0) {
           throw AppError.badRequest('holdings must be a non-empty array');
         }
 
+        // One class at a time when asked. The page ranks stocks, coins and
+        // metals separately so each section is ordered 1..N in its own right;
+        // filtering here rather than client-side keeps the model from spending
+        // its comparison on assets that will never be shown side by side.
+        const inScope = assetClass
+          ? holdings.filter((h) => classify(h.symbol.toUpperCase(), h.assetClass) === assetClass)
+          : holdings;
+
         const extra = [...new Set((candidates ?? []).map((s) => s.trim().toUpperCase()))].filter(
-          (s) => s && !holdings.some((h) => h.symbol.toUpperCase() === s),
+          (s) =>
+            s &&
+            !holdings.some((h) => h.symbol.toUpperCase() === s) &&
+            (!assetClass || classify(s) === assetClass),
         );
 
+        if (inScope.length === 0 && extra.length === 0) {
+          throw AppError.badRequest(
+            `Nothing to rank: no ${assetClass ?? 'matching'} holdings or candidates.`,
+          );
+        }
+
         const fingerprint = [
-          ...holdings.map((h) => `${h.symbol}:${h.quantity}:${h.averageCost}`).sort(),
+          ...inScope.map((h) => `${h.symbol}:${h.quantity}:${h.averageCost}`).sort(),
           ...extra.map((s) => `+${s}`).sort(),
         ].join('|');
-        const key = `ai:opportunities:${currency}:${fingerprint}`;
+        const key = `ai:opportunities:${assetClass ?? 'all'}:${currency}:${fingerprint}`;
 
         if (!refresh) {
           const hit = cacheGet<OpportunitySet>(key);
@@ -230,7 +248,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         }
 
         const wanted = [
-          ...holdings.map((h) => ({ symbol: h.symbol.toUpperCase(), holding: h })),
+          ...inScope.map((h) => ({ symbol: h.symbol.toUpperCase(), holding: h })),
           ...extra.map((symbol) => ({ symbol, holding: undefined })),
         ];
 
@@ -256,12 +274,21 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
               .then((r) => r.value.candles)
               .catch(() => []);
 
-            // Only PSX issuers have accounts to fetch, and a missing profile
-            // must not sink the whole asset — it ranks on price and trend.
-            const fundamentals =
+            // Only PSX issuers have accounts or payouts to fetch, and a
+            // missing one must not sink the whole asset — it ranks on price
+            // and trend regardless.
+            const [fundamentals, dividends] = await Promise.all([
               assetClass === 'stock'
-                ? await psx.getFundamentals(symbol).catch(() => null)
-                : null;
+                ? psx.getFundamentals(symbol).catch(() => null)
+                : Promise.resolve(null),
+              assetClass === 'stock'
+                ? cached(`dividends:${symbol}`, TTL.dividends, () => psx.getDividends(symbol), {
+                    persist: true,
+                  })
+                    .then((r) => r.value)
+                    .catch(() => null)
+                : Promise.resolve(null),
+            ]);
 
             const pnlPercent =
               holding && holding.averageCost > 0
@@ -290,6 +317,37 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
                     sector: fundamentals.sector,
                   }
                 : null,
+              // The payout record, summarised for both the prompt and the card.
+              // Yield is computed here from the trailing amount and the live
+              // price rather than taken from the exchange's own yield field:
+              // the two disagree often, and this one is reproducible from the
+              // payouts the card goes on to list.
+              dividends:
+                dividends && (dividends.next || dividends.history.length > 0)
+                  ? {
+                      next: dividends.next
+                        ? {
+                            exDate: dividends.next.exDate,
+                            amount: dividends.next.amount,
+                            period: dividends.next.period ?? null,
+                          }
+                        : null,
+                      history: dividends.history.slice(0, 12).map((d) => ({
+                        exDate: d.exDate,
+                        amount: d.amount,
+                        period: d.period ?? null,
+                      })),
+                      trailingAnnualAmount: dividends.trailingAnnualAmount,
+                      trailingYieldPercent:
+                        dividends.trailingAnnualAmount !== null && quote.price > 0
+                          ? (dividends.trailingAnnualAmount / quote.price) * 100
+                          : null,
+                    }
+                  : null,
+              // Surfaced to the client as `priceContext`, so a card can show
+              // where today's price sits in the year's range.
+              weekHigh52: fundamentals?.weekHigh52 ?? null,
+              weekLow52: fundamentals?.weekLow52 ?? null,
               // ~90 points is all a row-sized chart can resolve; sending 260
               // would trible the payload for pixels nobody can see.
               series: downsample(
@@ -317,7 +375,16 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           );
         }
 
-        const ranked = await ai.rankOpportunities({ assets, currency: currency || 'PKR' });
+        const ranked = await ai.rankOpportunities({
+          assets,
+          currency: currency || 'PKR',
+          // Guard the client's numbers: a negative or non-finite book would
+          // propagate straight into every suggested quantity.
+          ...(typeof bookValue === 'number' && Number.isFinite(bookValue) && bookValue > 0
+            ? { bookValue }
+            : {}),
+          ...(fxToDisplay ? { fxToDisplay } : {}),
+        });
         const result: OpportunitySet = { ...ranked, skipped };
 
         cacheSet(key, result, TTL.aiInsight, true);

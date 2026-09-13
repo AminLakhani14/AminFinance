@@ -28,6 +28,7 @@ import { useGetMarketListingQuery } from '@/services/endpoints';
 import { toApiError } from '@/services/api';
 import { useStreamedSymbols, useLiveTick } from '@/features/market/useLivePrice';
 import { favoriteKey, useFavorites } from '@/features/market/useFavorites';
+import { useIssuerLogos } from '@/features/market/useIssuerLogos';
 import { usePortfolio } from '@/features/portfolio/usePortfolio';
 import { formatDate } from '@/lib/format';
 import { cn } from '@/lib/utils';
@@ -35,11 +36,11 @@ import { cn } from '@/lib/utils';
 type ViewKey = AssetClass | 'holdings' | 'favorites';
 
 const TABS: Array<{ key: ViewKey; label: string }> = [
+  { key: 'favorites', label: 'Favorites' },
+  { key: 'holdings', label: 'Holdings' },
   { key: 'stock', label: 'PSX' },
   { key: 'crypto', label: 'Crypto' },
   { key: 'commodity', label: 'Metals' },
-  { key: 'holdings', label: 'Holdings' },
-  { key: 'favorites', label: 'Favorites' },
 ];
 
 type SortKey = 'symbol' | 'price' | 'changePercent' | 'volume';
@@ -57,12 +58,17 @@ const ROW_CAP = 150;
 const LIVE_ROWS = 25;
 
 export function Market() {
-  const [tab, setTab] = useState<ViewKey>('stock');
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<SortKey>('changePercent');
   const [descending, setDescending] = useState(true);
   const { holdings } = usePortfolio();
   const { favorites, toggleFavorite } = useFavorites();
+  // Favorites lead the tab strip, but landing on an empty list says nothing.
+  // They come from localStorage synchronously, so the opening tab can be
+  // decided on the first render; holdings arrive async and cannot be.
+  const [tab, setTab] = useState<ViewKey>(() =>
+    favorites.size > 0 ? 'favorites' : 'stock',
+  );
 
   const stockQuery = useGetMarketListingQuery(
     { assetClass: 'stock' },
@@ -126,7 +132,13 @@ export function Market() {
 
   const filtered = useMemo(() => {
     const needle = query.trim().toUpperCase();
-    const matched = needle ? rows.filter((r) => r.symbol.includes(needle)) : rows;
+    // Names are on screen now, so searching one has to work — "NESTLE" and
+    // "Nestle Pakistan" should both find the row.
+    const matched = needle
+      ? rows.filter(
+          (r) => r.symbol.includes(needle) || (r.name?.toUpperCase().includes(needle) ?? false),
+        )
+      : rows;
 
     const sorted = [...matched].sort((a, b) => {
       if (sort === 'symbol') return a.symbol.localeCompare(b.symbol);
@@ -149,6 +161,15 @@ export function Market() {
     [visible],
   );
   useStreamedSymbols(streamed);
+
+  // Issuer logos for the equities on screen. PSX's bulk listing carries no
+  // websites, so these are looked up separately — for the visible rows only,
+  // never the whole 500-row market.
+  const logoSymbols = useMemo(
+    () => visible.filter((r) => r.assetClass === 'stock').map((r) => r.symbol),
+    [visible],
+  );
+  const logos = useIssuerLogos(logoSymbols);
 
   function toggleSort(key: SortKey) {
     if (key === sort) {
@@ -192,7 +213,7 @@ export function Market() {
                   onClick={() => setTab(t.key)}
                   className={cn(
                     'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all',
-                    t.key === 'holdings' && 'ml-1 border-l border-border',
+                    t.key === 'stock' && 'ml-1 border-l border-border pl-3.5',
                     tab === t.key
                       ? 'bg-surface text-text shadow-sm ring-1 ring-inset ring-accent/20'
                       : 'text-text-muted hover:text-text',
@@ -220,7 +241,7 @@ export function Market() {
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Filter by symbol…"
+                placeholder="Filter by symbol or name…"
                 className={cn(
                   'h-9 w-full rounded-lg border border-border bg-surface-sunken pl-9 pr-3',
                   'text-sm text-text placeholder:text-text-subtle',
@@ -254,7 +275,7 @@ export function Market() {
                 <table className="w-full min-w-[680px] text-sm">
                   <thead>
                     <tr className="border-b border-border text-left text-xs text-text-muted">
-                      <SortHeader label="Symbol" active={sort === 'symbol'} onClick={() => toggleSort('symbol')} />
+                      <SortHeader label="Symbol" className="w-[44%]" active={sort === 'symbol'} onClick={() => toggleSort('symbol')} />
                       {tab === 'stock' ? (
                         <th className="px-3 py-2 font-medium">Sector</th>
                       ) : tab === 'holdings' || tab === 'favorites' ? (
@@ -277,6 +298,7 @@ export function Market() {
                               ? 'type'
                               : 'none'
                         }
+                        logoUrl={logos.get(row.symbol)}
                         favorite={favorites.has(favoriteKey(row))}
                         onToggleFavorite={() => toggleFavorite(row)}
                       />
@@ -302,15 +324,17 @@ function SortHeader({
   label,
   active,
   align = 'left',
+  className,
   onClick,
 }: {
   label: string;
   active: boolean;
   align?: 'left' | 'right';
+  className?: string;
   onClick: () => void;
 }) {
   return (
-    <th className={cn('px-3 py-2 font-medium', align === 'right' && 'text-right')}>
+    <th className={cn('px-3 py-2 font-medium', align === 'right' && 'text-right', className)}>
       <button
         onClick={onClick}
         className={cn(
@@ -328,11 +352,13 @@ function SortHeader({
 function Row({
   row,
   detailColumn,
+  logoUrl,
   favorite,
   onToggleFavorite,
 }: {
   row: MarketRow;
   detailColumn: 'sector' | 'type' | 'none';
+  logoUrl: string | null | undefined;
   favorite: boolean;
   onToggleFavorite: () => void;
 }) {
@@ -364,16 +390,25 @@ function Row({
             symbol={row.symbol}
             assetClass={row.assetClass}
             currency={row.currency}
+            logoUrl={logoUrl}
           />
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <Link
               to={`/asset/${encodeURIComponent(row.symbol)}`}
               className="block font-semibold text-text transition-colors hover:text-accent"
             >
               {row.symbol}
             </Link>
-            <span className="text-[10px] uppercase tracking-wider text-text-subtle">
-              {row.currency}
+            {/* The issuer name is what identifies a row PSX-side; the quote
+                currency is a poor substitute and only stands in for crypto
+                and metals, which publish no name. */}
+            <span
+              className="block truncate text-[11px] text-text-subtle"
+              title={row.name ?? undefined}
+            >
+              {row.name ?? (
+                <span className="text-[10px] uppercase tracking-wider">{row.currency}</span>
+              )}
             </span>
           </div>
         </div>

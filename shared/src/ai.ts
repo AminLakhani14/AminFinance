@@ -192,7 +192,96 @@ export interface Opportunity {
   rank: number;
   /** Two sentences at most, tied to the data. */
   rationale: string;
+  /**
+   * The same call in everyday language, for a reader who does not know what
+   * RSI or a moving average is.
+   *
+   * A separate field rather than a rewrite of `rationale`: the technical
+   * version is what makes the call auditable, and collapsing the two would
+   * either strip the evidence or leave the plain version hedged and vague.
+   */
+  plainEnglish: string;
   levels: TradeLevels | null;
+  /** How much to move, and by when. Null when the action is `hold`. */
+  sizing: PositionSizing | null;
+  /**
+   * Issuer facts behind the call, so the card can show why without a second
+   * request. Null for crypto and commodities, which have no issuer.
+   */
+  profile: OpportunityProfile | null;
+  /** 52-week range and day move — context for the price, any asset class. */
+  priceContext: PriceContext | null;
+}
+
+/** Issuer-level facts. PSX equities only. */
+export interface OpportunityProfile {
+  name: string;
+  marketCap: number | null;
+  peRatio: number | null;
+  epsTtm: number | null;
+  /** Trailing yield as a percentage, when the exchange reports one. */
+  dividendYield: number | null;
+  sector: string | null;
+  /**
+   * Payout record, parsed from the exchange's payouts table.
+   *
+   * Carried on the ranking row so a dividend-driven call ("hold it for the
+   * yield") can show the payouts it rests on without a second request.
+   */
+  dividends: DividendSummary | null;
+}
+
+/**
+ * What an issuer has paid and what it has announced.
+ *
+ * Amounts are per share in the issuer's currency, already converted from the
+ * exchange's percent-of-par quoting — PSX publishes "250%", meaning PKR 25 on
+ * a PKR 10 par value, which is not a yield and must never be shown as one.
+ */
+export interface DividendSummary {
+  /** The next announced payout, or null when none is scheduled. */
+  next: { exDate: string; amount: number; period: string | null } | null;
+  /** Past payouts, newest first. */
+  history: Array<{ exDate: string; amount: number; period: string | null }>;
+  /** Sum of the last twelve months' payouts, per share. */
+  trailingAnnualAmount: number | null;
+  /** Trailing amount as a percentage of the current price. */
+  trailingYieldPercent: number | null;
+}
+
+export interface PriceContext {
+  changePercent: number;
+  weekHigh52: number | null;
+  weekLow52: number | null;
+}
+
+/**
+ * The size of the suggested move.
+ *
+ * Expressed as a share of the *book*, not of the position, because that is the
+ * decision actually being made — "put 5% of the portfolio here" survives a
+ * changing balance, whereas "buy 200 shares" is stale the moment prices move
+ * and meaningless without knowing the total.
+ *
+ * `units` and `amount` are derived server-side from that percentage at the
+ * current price, so the client never multiplies numbers the model invented.
+ */
+export interface PositionSizing {
+  /**
+   * Percentage points of the total book to add (positive) or remove
+   * (negative). An `accumulate` of +3 on a 100,000 book means ~3,000 in.
+   */
+  deltaPercentOfBook: number;
+  /** Target weight once the move is complete, 0-100. */
+  targetAllocationPercent: number;
+  /** Units to trade at the current price. Sign matches `deltaPercentOfBook`. */
+  units: number;
+  /** Cash value of the move in the asset's own currency. Always positive. */
+  amount: number;
+  /** Whether to move all at once or scale in — and over what period. */
+  pacing: 'now' | 'staged' | 'on-dip';
+  /** One sentence on why this size: conviction, concentration, or risk. */
+  rationale: string;
 }
 
 export interface OpportunitySet {
@@ -216,7 +305,28 @@ export interface OpportunitiesRequest {
   }>;
   /** Symbols to weigh up alongside the book, though not currently held. */
   candidates?: string[];
+  /**
+   * Restrict the ranking to one asset class.
+   *
+   * The page ranks stocks, coins and metals in three separate calls so each
+   * section gets its own 1..N ordering, rather than one global ranking whose
+   * numbers skip within a section. Holdings and candidates of other classes
+   * are filtered out server-side, and the cache key includes this, so the
+   * three results are cached independently.
+   *
+   * Omit it to rank everything together, which is still what the portfolio
+   * review does.
+   */
+  assetClass?: AssetClass;
   currency: string;
+  /**
+   * Total portfolio value in `currency`. Lets the server express sizing in
+   * units and cash instead of bare percentages. Omit it and sizing still
+   * works, just without absolute figures.
+   */
+  bookValue?: number;
+  /** Rate from each asset currency into `currency`, keyed by currency code. */
+  fxToDisplay?: Record<string, number>;
   refresh?: boolean;
 }
 

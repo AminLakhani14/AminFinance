@@ -2,13 +2,16 @@
  * Holdings table — the portfolio's primary view, and the table view that
  * satisfies the charts' relief rule.
  */
+import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { AlertTriangle } from 'lucide-react';
 import type { HoldingWithFlags } from '@/lib/calc/costBasis';
 import { Sparkline } from '@/components/charts/Sparkline';
 import { LivePrice } from '@/components/ui/LivePrice';
 import { InstrumentLogo } from '@/components/ui/InstrumentLogo';
-import { formatCurrency, formatPercent, formatQuantity, directionClass } from '@/lib/format';
+import { useIssuerLogos } from '@/features/market/useIssuerLogos';
+import { formatCurrency, formatPercent, directionClass } from '@/lib/format';
+import { formatHoldingQuantity } from '@/lib/units';
 import { useAppSelector } from '@/app/hooks';
 import { cn } from '@/lib/utils';
 
@@ -27,6 +30,13 @@ export function HoldingsTable({
   displayCurrency,
 }: HoldingsTableProps) {
   const privacyMode = useAppSelector((s) => s.settings.privacyMode);
+  // Above the early return: hooks cannot be called conditionally, and an empty
+  // book simply asks for no symbols.
+  const logoSymbols = useMemo(
+    () => holdings.filter((h) => h.assetClass === 'stock').map((h) => h.symbol),
+    [holdings],
+  );
+  const logos = useIssuerLogos(logoSymbols);
 
   if (holdings.length === 0) {
     return (
@@ -58,6 +68,10 @@ export function HoldingsTable({
             const values = sparklines?.get(h.symbol) ?? [];
             const direction =
               h.unrealizedPnl > 0 ? 'up' : h.unrealizedPnl < 0 ? 'down' : 'flat';
+            // Silver is quoted per troy oz but held by the tola, so the stored
+            // oz figure is shown converted, with the raw unit in the tooltip.
+            const qty = formatHoldingQuantity(h.quantity, h.assetClass);
+            const metalUnits = h.assetClass === 'commodity';
 
             return (
               <tr
@@ -70,6 +84,7 @@ export function HoldingsTable({
                       symbol={h.symbol}
                       assetClass={h.assetClass}
                       currency={h.currency}
+                      logoUrl={logos.get(h.symbol)}
                     />
                     <div>
                       <Link
@@ -97,11 +112,17 @@ export function HoldingsTable({
                 </td>
 
                 <td className="px-3 py-3 text-right nums text-text-muted">
-                  {formatQuantity(h.quantity)}
+                  <span title={qty.title}>{qty.text}</span>
                 </td>
                 <td className="px-3 py-3 text-right nums text-text-muted">
                   {h.costBasisKnown ? (
-                    hide(formatCurrency(h.averageCost, h.currency))
+                    <>
+                      {hide(formatCurrency(h.averageCost, h.currency))}
+                      {/* Qty reads in tola but cost and price are per troy
+                          ounce — without the suffix the two look like the same
+                          unit and the row appears to not multiply out. */}
+                      {metalUnits ? <span className="text-text-subtle">/oz</span> : null}
+                    </>
                   ) : (
                     <span title="No purchase price recorded for this position.">—</span>
                   )}
@@ -112,6 +133,7 @@ export function HoldingsTable({
                     fallbackPrice={h.currentPrice}
                     currency={h.currency}
                   />
+                  {metalUnits ? <span className="text-text-subtle nums">/oz</span> : null}
                 </td>
                 <td className="px-3 py-3 text-right nums font-medium text-text">
                   {hide(formatCurrency(convert(h.marketValue, h.currency), displayCurrency))}

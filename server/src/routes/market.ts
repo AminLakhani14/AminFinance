@@ -26,7 +26,7 @@ import * as psx from '../providers/psx.js';
 import * as binance from '../providers/binance.js';
 import * as metals from '../providers/metals.js';
 import * as fx from '../providers/fx.js';
-import { cached, TTL, type CacheLookup } from '../lib/cache.js';
+import { cached, set as cacheSet, TTL, type CacheLookup } from '../lib/cache.js';
 import { AppError } from '../lib/errors.js';
 
 /**
@@ -340,8 +340,10 @@ export async function marketRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  /** GET /api/dividends/:symbol */
-  app.get<{ Params: { symbol: string } }>('/api/dividends/:symbol', async (request, reply) => {
+  /** GET /api/dividends/:symbol?refresh=1 */
+  app.get<{ Params: { symbol: string }; Querystring: { refresh?: string } }>(
+    '/api/dividends/:symbol',
+    async (request, reply) => {
     const symbol = request.params.symbol.toUpperCase();
     const assetClass = classify(symbol);
     // Neither a coin nor a bar of metal pays a dividend.
@@ -356,15 +358,25 @@ export async function marketRoutes(app: FastifyInstance): Promise<void> {
       return empty;
     }
 
-    const result = await cached<DividendInfo>(
-      `dividends:${symbol}`,
-      TTL.dividends,
-      () => psx.getDividends(symbol),
-      { persist: true },
-    );
+    // Payouts are cached for a day, which is right for a figure that changes a
+    // handful of times a year — but it also means a parser fix does not reach
+    // an already-cached issuer until the entry expires. `?refresh=1` bypasses
+    // the read so a stale entry can be replaced on demand.
+    const key = `dividends:${symbol}`;
+    if (request.query.refresh) {
+      const fresh = await psx.getDividends(symbol);
+      cacheSet(key, fresh, TTL.dividends, true);
+      reply.header(CACHE_HEADERS.status, 'miss');
+      return fresh;
+    }
+
+    const result = await cached<DividendInfo>(key, TTL.dividends, () => psx.getDividends(symbol), {
+      persist: true,
+    });
     applyCacheHeaders(reply, result);
     return result.value;
-  });
+    },
+  );
 
   /** GET /api/fx?base=USD */
   app.get<{ Querystring: { base?: string } }>('/api/fx', async (request, reply) => {
@@ -374,6 +386,51 @@ export async function marketRoutes(app: FastifyInstance): Promise<void> {
     });
     applyCacheHeaders(reply, result);
     return result.value;
+  });
+
+  /**
+   * GET /api/logos?symbols=LUCK,FFC — issuer logo URLs for PSX equities.
+   *
+   * The market listing is one bulk scrape and carries no issuer websites, so
+   * logos cannot come with it; the company page has them but costs a request
+   * each. This exists so the table can ask only for the rows actually on
+   * screen — a couple of dozen — rather than all ~500.
+   *
+   * Each lookup shares the 24h fundamentals cache, so a symbol the user has
+   * already opened costs nothing, and a scroll back up re-reads from cache.
+   * Failures resolve to null rather than rejecting: a missing logo is a
+   * monogram, never a broken table.
+   */
+  app.get<{ Querystring: { symbols?: string } }>('/api/logos', async (request) => {
+    const symbols = [
+      ...new Set(
+        (request.query.symbols ?? '')
+          .split(',')
+          .map((s) => s.trim().toUpperCase())
+          .filter(Boolean),
+      ),
+    ].slice(0, 50);
+
+    if (symbols.length === 0) return { logos: {} };
+
+    const entries = await Promise.all(
+      symbols.map(async (symbol): Promise<[string, string | null]> => {
+        if (classify(symbol) !== 'stock') return [symbol, null];
+        try {
+          const result = await cached<Fundamentals>(
+            `fundamentals:${symbol}`,
+            TTL.fundamentals,
+            () => psx.getFundamentals(symbol),
+            { persist: true },
+          );
+          return [symbol, result.value.logoUrl];
+        } catch {
+          return [symbol, null];
+        }
+      }),
+    );
+
+    return { logos: Object.fromEntries(entries) };
   });
 
   /** GET /api/search?q=FF — resolve a ticker before adding a holding. */

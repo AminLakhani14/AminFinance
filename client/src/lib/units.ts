@@ -10,6 +10,7 @@
  * exactly 3/8. The ratio is written as that fraction rather than a rounded
  * decimal so 20 tola comes back as precisely 7.5 oz, not 7.499999.
  */
+import { formatQuantity } from './format';
 
 /** One tola in troy ounces — exact. */
 export const TROY_OZ_PER_TOLA = 3 / 8;
@@ -32,4 +33,33 @@ export function troyOzToTola(troyOz: number): number {
 export function formatTola(troyOz: number): string {
   const tola = troyOzToTola(troyOz);
   return Number(tola.toFixed(3)).toLocaleString(undefined, { maximumFractionDigits: 3 });
+}
+
+/**
+ * Quantity as the holder thinks of it, for display only.
+ *
+ * Metals stay stored in troy ounces — that is the unit the spot quote and the
+ * cost basis share — but a Pakistani holder counts silver in tolas, so "7.5"
+ * in the Qty column reads as a mistake even when it is exactly right. This
+ * renders the tola figure with its unit so the number and its meaning cannot
+ * drift apart, and leaves every other asset class alone.
+ */
+export function formatMetalQuantity(troyOz: number): { text: string; title: string } {
+  return {
+    text: `${formatTola(troyOz)} tola`,
+    title: `${troyOz.toLocaleString(undefined, { maximumFractionDigits: 4 })} troy oz — stored and priced per troy ounce, shown in tola (1 tola = 3/8 troy oz)`,
+  };
+}
+
+/**
+ * Asset-class-aware quantity, so callers never have to remember which classes
+ * carry a unit. Returns `title` only when the displayed unit differs from the
+ * stored one and the distinction is worth a tooltip.
+ */
+export function formatHoldingQuantity(
+  quantity: number,
+  assetClass: string,
+): { text: string; title?: string } {
+  if (assetClass === 'commodity') return formatMetalQuantity(quantity);
+  return { text: formatQuantity(quantity) };
 }
