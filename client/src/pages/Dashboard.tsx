@@ -13,9 +13,19 @@ import { useGetCandlesQuery } from '@/services/endpoints';
 import { formatCurrency, formatPercent } from '@/lib/format';
 import { SetupChecklist } from '@/features/settings/SetupChecklist';
 import { HeroVisual } from '@/components/three/HeroVisual';
+import { useNetWorthRecorder } from '@/features/planning/useNetWorthRecorder';
+import { ActionAlertsCard } from '@/features/planning/ActionAlertsCard';
 
 export function Dashboard() {
   const { holdings, summary, convert, displayCurrency, isEmpty, isLoading } = usePortfolio();
+
+  // Records one net-worth snapshot per day. The `snapshots` table has existed
+  // since schema v1 with nothing writing to it, which is why Analytics has
+  // been reconstructing history from today's quantities — that reconstruction
+  // treats a position bought last week as though it had been held all year.
+  // Mounted on the dashboard because it is the landing route, so the snapshot
+  // lands on any day the app is opened.
+  useNetWorthRecorder();
   const health = useGetHealthQuery(undefined, { pollingInterval: 30_000 });
   const sparklines = useSparklines(holdings.map((h) => h.symbol));
 
@@ -135,6 +145,11 @@ export function Dashboard() {
           </CardBody>
         </Card>
       </div>
+
+      {/* Filings with a deadline. On the dashboard rather than only on
+          Planning, because a book closure missed is a payout missed — it is
+          the one item here that expires. */}
+      <ActionAlertsCard />
 
       <Card>
         <CardHeader title="Holdings" description={`${holdings.length} open positions`} />

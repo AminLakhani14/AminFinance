@@ -7,7 +7,11 @@
  * credential for any upstream. See PROJECT_PLAN.md §1.2.
  */
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
+import type { RateSettings, TaxSettings, ZakatSettings } from '@aminfinance/shared';
 import { clearColorCache } from '@/lib/cssColor';
+import { DEFAULT_ZAKAT_SETTINGS } from '@/lib/calc/zakat';
+import { DEFAULT_TAX_SETTINGS } from '@/lib/calc/tax';
+import { DEFAULT_RATE_SETTINGS } from '@/lib/calc/inflation';
 
 export type Theme = 'light' | 'dark';
 
@@ -23,6 +27,19 @@ export interface SettingsState {
   enable3D: boolean;
   /** Show absolute currency amounts, or hide them for screenshots. */
   privacyMode: boolean;
+  /**
+   * Zakat basis and equity treatment.
+   *
+   * Nested rather than flattened into this slice, because these are fiqh
+   * positions rather than app preferences and the grouping is what makes that
+   * legible at the call site — `settings.zakat.nisabBasis` reads as a
+   * religious choice, `settings.nisabBasis` reads like a display toggle.
+   */
+  zakat: ZakatSettings;
+  /** Filer status and the rates from the current Finance Act. */
+  tax: TaxSettings;
+  /** User-maintained CPI and savings-rate figures. */
+  rates: RateSettings;
 }
 
 const STORAGE_KEY = 'aminfinance.settings';
@@ -37,6 +54,9 @@ const defaults: SettingsState = {
   riskFreeRatePercent: 4.5,
   enable3D: true,
   privacyMode: false,
+  zakat: DEFAULT_ZAKAT_SETTINGS,
+  tax: DEFAULT_TAX_SETTINGS,
+  rates: DEFAULT_RATE_SETTINGS,
 };
 
 function loadInitialState(): SettingsState {
@@ -46,7 +66,18 @@ function loadInitialState(): SettingsState {
     const stored: unknown = raw ? JSON.parse(raw) : {};
     // Spread over defaults so a settings key added in a later release doesn't
     // read as undefined for existing users.
-    const merged = { ...defaults, ...(stored as Partial<SettingsState>) };
+    const partial = (stored ?? {}) as Partial<SettingsState>;
+    // The nested groups need their own merge: a top-level spread would take a
+    // stored `zakat` object wholesale, so a field added to ZakatSettings in a
+    // later release would arrive as undefined for every existing user — and
+    // an undefined nisab basis silently means "no zakat is ever due".
+    const merged: SettingsState = {
+      ...defaults,
+      ...partial,
+      zakat: { ...defaults.zakat, ...(partial.zakat ?? {}) },
+      tax: { ...defaults.tax, ...(partial.tax ?? {}) },
+      rates: { ...defaults.rates, ...(partial.rates ?? {}) },
+    };
     // index.html already applied the theme class from its own key; keep the
     // two in sync so a manual localStorage edit can't desync them.
     const themeFromDom = document.documentElement.classList.contains('dark')
@@ -104,6 +135,25 @@ const settingsSlice = createSlice({
       state.privacyMode = !state.privacyMode;
       persist(state);
     },
+    setZakatSettings(state, action: PayloadAction<Partial<ZakatSettings>>) {
+      state.zakat = { ...state.zakat, ...action.payload };
+      persist(state);
+    },
+    setTaxSettings(state, action: PayloadAction<Partial<TaxSettings>>) {
+      state.tax = { ...state.tax, ...action.payload };
+      persist(state);
+    },
+    /**
+     * Stamps `updatedAt` on every write rather than trusting the caller.
+     *
+     * The staleness warning is the only thing standing between a typed-once
+     * CPI figure and every real-return number in the app quietly aging into
+     * fiction, so the timestamp cannot be the form's responsibility.
+     */
+    setRateSettings(state, action: PayloadAction<Partial<RateSettings>>) {
+      state.rates = { ...state.rates, ...action.payload, updatedAt: Date.now() };
+      persist(state);
+    },
   },
 });
 
@@ -115,6 +165,9 @@ export const {
   setRiskFreeRate,
   setEnable3D,
   togglePrivacyMode,
+  setZakatSettings,
+  setTaxSettings,
+  setRateSettings,
 } = settingsSlice.actions;
 
 export default settingsSlice.reducer;

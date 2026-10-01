@@ -3,7 +3,13 @@ import { cn } from '@/lib/utils';
 
 interface CardProps {
   children: ReactNode;
-  className?: string;
+  /**
+   * Explicitly allows `undefined` so a caller can forward an optional
+   * `className` straight through under `exactOptionalPropertyTypes`, which
+   * distinguishes "absent" from "present and undefined". Same treatment as
+   * `StatTile`'s optionals.
+   */
+  className?: string | undefined;
 }
 
 export function Card({ children, className }: CardProps) {

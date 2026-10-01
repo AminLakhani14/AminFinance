@@ -37,9 +37,37 @@ export type {
   IncomeCategory,
   BudgetCategory,
   BudgetEntry,
+  BudgetLog,
+  BudgetChange,
   BudgetSummary,
   CategoryTotal,
 } from './budget.js';
+
+export type {
+  CashAccountKind,
+  CashAccount,
+  Liability,
+  DebtRepayment,
+  NisabBasis,
+  EquityZakatTreatment,
+  ZakatSettings,
+  ZakatLine,
+  ZakatAssessment,
+  FilerStatus,
+  TaxSettings,
+  TaxableDisposal,
+  TaxYearReport,
+  RateSettings,
+  Goal,
+  GoalProjection,
+} from './planning.js';
+
+export type {
+  IndicatorPeriod,
+  IndicatorGroup,
+  EconomyIndicator,
+  EconomySnapshot,
+} from './economy.js';
 
 export type {
   Verdict,
@@ -65,6 +93,21 @@ export type {
 } from './ai.js';
 
 export type {
+  TradeSignal,
+  HoldPeriod,
+  ZoneStatus,
+  AiReviewStatus,
+  TradeAiState,
+  TradeSeriesPoint,
+  TradePlanMetrics,
+  TradePlan,
+  MarketPulse,
+  TradingScope,
+  TradingDesk,
+  TradingRequest,
+} from './trading.js';
+
+export type {
   ApiError,
   ApiErrorCode,
   CachedPayload,
@@ -76,3 +119,4 @@ export type {
 } from './api.js';
 
 export { CACHE_HEADERS, AUTH_HEADER } from './api.js';
+export { zoneStatusOf } from './trading.js';

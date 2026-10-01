@@ -33,6 +33,12 @@ const Market = lazy(() =>
 const MonthlyExpense = lazy(() =>
   import("@/pages/MonthlyExpense").then((m) => ({ default: m.MonthlyExpense })),
 );
+const Trading = lazy(() =>
+  import("@/pages/Trading").then((m) => ({ default: m.Trading })),
+);
+const Planning = lazy(() =>
+  import("@/pages/Planning").then((m) => ({ default: m.Planning })),
+);
 const Settings = lazy(() =>
   import("@/pages/Settings").then((m) => ({ default: m.Settings })),
 );
@@ -94,10 +100,26 @@ export function App() {
               }
             />
             <Route
+              path="trading"
+              element={
+                <Suspense fallback={<RouteFallback />}>
+                  <Trading />
+                </Suspense>
+              }
+            />
+            <Route
               path="suggestions"
               element={
                 <Suspense fallback={<RouteFallback />}>
                   <Suggestions />
+                </Suspense>
+              }
+            />
+            <Route
+              path="planning"
+              element={
+                <Suspense fallback={<RouteFallback />}>
+                  <Planning />
                 </Suspense>
               }
             />

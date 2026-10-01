@@ -18,6 +18,7 @@ import { healthRoutes } from './routes/health.js';
 import { marketRoutes } from './routes/market.js';
 import { binanceRoutes } from './routes/binance.js';
 import { aiRoutes } from './routes/ai.js';
+import { tradingRoutes } from './routes/trading.js';
 import { newsRoutes } from './routes/news.js';
 import { priceStreamRoutes } from './ws/prices.js';
 
@@ -134,6 +135,7 @@ async function buildServer() {
   await app.register(binanceRoutes);
   await app.register(priceStreamRoutes);
   await app.register(aiRoutes);
+  await app.register(tradingRoutes);
   await app.register(newsRoutes);
 
   return app;

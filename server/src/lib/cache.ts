@@ -104,20 +104,48 @@ export function set<T>(key: string, value: T, ttlMs: number, persist = false): v
   if (persist) scheduleFlush();
 }
 
+/** Keys with a background refresh in flight, so each is refreshed once. */
+const revalidating = new Set<string>();
+
+/** Refresh `key` in the background. Failures keep the old value; never thrown. */
+export function revalidate<T>(key: string, ttlMs: number, loader: () => Promise<T>, persist = false): void {
+  if (revalidating.has(key)) return;
+  revalidating.add(key);
+  loader()
+    .then((value) => set(key, value, ttlMs, persist))
+    .catch(() => undefined)
+    .finally(() => revalidating.delete(key));
+}
+
 /**
- * Fetch-through helper with stale-on-error.
+ * Fetch-through helper with stale-on-error, and optionally
+ * stale-while-revalidate.
  *
  * Order: fresh cache -> upstream -> stale cache. The last step is what keeps
  * the dashboard usable when PSX DPS is down or rate-limiting us.
+ *
+ * With `revalidateWithinMs`, an entry that expired less than that long ago is
+ * returned at once and refreshed in the background, so a request never waits
+ * on the upstream for data it saw a moment ago — only a key never fetched, or
+ * one too old to trust, does. Such a value is not flagged `stale` (nothing
+ * failed); its true age still travels in `ageSeconds`.
  */
 export async function cached<T>(
   key: string,
   ttlMs: number,
   loader: () => Promise<T>,
-  options: { persist?: boolean } = {},
+  options: { persist?: boolean; revalidateWithinMs?: number } = {},
 ): Promise<CacheLookup<T> & { hit: boolean }> {
   const fresh = get<T>(key);
   if (fresh) return { ...fresh, hit: true };
+
+  if (options.revalidateWithinMs !== undefined) {
+    const recent = getStale<T>(key);
+    if (recent && recent.ageSeconds * 1000 <= ttlMs + options.revalidateWithinMs) {
+      revalidate(key, ttlMs, loader, options.persist ?? false);
+      return { ...recent, stale: false, hit: true };
+    }
+  }
 
   try {
     const value = await loader();
@@ -142,6 +170,19 @@ export function stats(): { entries: number; persisted: number } {
   return { entries: store.size, persisted };
 }
 
+/**
+ * How long past expiry a value may still be served while it refreshes. Sized
+ * to what each figure can tolerate: a price a few minutes old is fine for a
+ * page that will show the refreshed one on its next poll; a daily chart
+ * barely moves in half an hour; issuer facts move quarterly.
+ */
+export const REVALIDATE = {
+  quote: 10 * 60_000,
+  candles: 30 * 60_000,
+  listing: 10 * 60_000,
+  fundamentals: 7 * 24 * 60 * 60_000,
+} as const;
+
 /** TTLs in one place so the refresh strategy is auditable. */
 export const TTL = {
   quote: 60_000,
@@ -152,5 +193,19 @@ export const TTL = {
   fx: 12 * 60 * 60_000,
   binanceAccount: 30_000,
   binanceTrades: 5 * 60_000,
+  /**
+   * Annual macro series change a few times a year; the live FX rate inside the
+   * same snapshot is the only fast-moving part, and 6h keeps it reasonable
+   * without refetching nine World Bank series on every tab visit.
+   */
+  economy: 6 * 60 * 60_000,
   aiInsight: 24 * 60 * 60_000,
+  /**
+   * AI reviews of trade plans. Their keys carry the trading day, so a new day
+   * asks again regardless; this only bounds an entry within the day. The
+   * levels a review sits beside are recomputed live, never cached with it.
+   */
+  aiTrading: 12 * 60 * 60_000,
+  /** The market scan's shortlist — kept steady while its reviews land. */
+  tradingShortlist: 10 * 60_000,
 } as const;

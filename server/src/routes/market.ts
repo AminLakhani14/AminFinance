@@ -20,13 +20,15 @@ import type {
   FxRates,
   MarketRow,
   MarketListing,
+  EconomySnapshot,
 } from '@aminfinance/shared';
 import { CACHE_HEADERS } from '@aminfinance/shared';
 import * as psx from '../providers/psx.js';
 import * as binance from '../providers/binance.js';
 import * as metals from '../providers/metals.js';
 import * as fx from '../providers/fx.js';
-import { cached, set as cacheSet, TTL, type CacheLookup } from '../lib/cache.js';
+import * as economy from '../providers/economy.js';
+import { cached, set as cacheSet, REVALIDATE, TTL, type CacheLookup } from '../lib/cache.js';
 import { AppError } from '../lib/errors.js';
 
 /**
@@ -88,7 +90,9 @@ export async function marketRoutes(app: FastifyInstance): Promise<void> {
     if (crypto.length > 0) {
       const key = `quotes:crypto:${crypto.join(',')}`;
       try {
-        const result = await cached(key, TTL.quote, () => binance.getQuotes(crypto));
+        const result = await cached(key, TTL.quote, () => binance.getQuotes(crypto), {
+          revalidateWithinMs: REVALIDATE.quote,
+        });
         quotes.push(...result.value);
         oldestAge = Math.max(oldestAge, result.ageSeconds);
         anyStale ||= result.stale;
@@ -103,7 +107,9 @@ export async function marketRoutes(app: FastifyInstance): Promise<void> {
     if (commodities.length > 0) {
       const results = await Promise.allSettled(
         commodities.map((symbol) =>
-          cached(`quote:commodity:${symbol}`, TTL.quote, () => metals.getQuote(symbol)),
+          cached(`quote:commodity:${symbol}`, TTL.quote, () => metals.getQuote(symbol), {
+            revalidateWithinMs: REVALIDATE.quote,
+          }),
         ),
       );
       results.forEach((result, i) => {
@@ -120,25 +126,23 @@ export async function marketRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    // PSX is one request per symbol; run them concurrently under the bucket.
-    const stockResults = await Promise.allSettled(
-      stocks.map((symbol) =>
-        cached(`quote:stock:${symbol}`, TTL.quote, () => psx.getQuote(symbol)),
-      ),
-    );
-
-    stockResults.forEach((result, i) => {
-      const symbol = stocks[i] as string;
-      if (result.status === 'fulfilled') {
-        quotes.push(result.value.value);
-        oldestAge = Math.max(oldestAge, result.value.ageSeconds);
-        anyStale ||= result.value.stale;
-        allHit &&= result.value.hit;
-      } else {
-        errors[symbol] =
-          result.reason instanceof Error ? result.reason.message : 'failed';
+    // PSX batches too: the whole book's stocks are one scanner request. Keyed
+    // on the sorted set so the same book always hits the same entry.
+    if (stocks.length > 0) {
+      const key = `quotes:stock:${[...stocks].sort().join(',')}`;
+      try {
+        const result = await cached(key, TTL.quote, () => psx.getQuotes(stocks), {
+          revalidateWithinMs: REVALIDATE.quote,
+        });
+        quotes.push(...result.value.quotes);
+        for (const symbol of result.value.missing) errors[symbol] = `No PSX quote for "${symbol}".`;
+        oldestAge = Math.max(oldestAge, result.ageSeconds);
+        anyStale ||= result.stale;
+        allHit &&= result.hit;
+      } catch (err) {
+        for (const s of stocks) errors[s] = err instanceof Error ? err.message : 'failed';
       }
-    });
+    }
 
     if (quotes.length === 0 && Object.keys(errors).length > 0) {
       throw AppError.providerError('market', `No quotes available. ${Object.values(errors)[0]}`);
@@ -177,7 +181,7 @@ export async function marketRoutes(app: FastifyInstance): Promise<void> {
             rows: await psx.getMarketWatch(),
             asOf: Date.now(),
           }),
-          { persist: true },
+          { persist: true, revalidateWithinMs: REVALIDATE.listing },
         );
         applyCacheHeaders(reply, result);
         return result.value;
@@ -192,7 +196,7 @@ export async function marketRoutes(app: FastifyInstance): Promise<void> {
             rows: await binance.getMarketTickers(quote),
             asOf: Date.now(),
           }),
-          { persist: true },
+          { persist: true, revalidateWithinMs: REVALIDATE.listing },
         );
         applyCacheHeaders(reply, result);
         return result.value;
@@ -202,7 +206,11 @@ export async function marketRoutes(app: FastifyInstance): Promise<void> {
         // A fixed list of four, so this is a fan-out rather than a bulk call.
         const symbols = metals.listSymbols();
         const settled = await Promise.allSettled(
-          symbols.map((s) => cached(`quote:commodity:${s}`, TTL.quote, () => metals.getQuote(s))),
+          symbols.map((s) =>
+            cached(`quote:commodity:${s}`, TTL.quote, () => metals.getQuote(s), {
+              revalidateWithinMs: REVALIDATE.quote,
+            }),
+          ),
         );
         const rows: MarketRow[] = settled.flatMap((r) =>
           r.status === 'fulfilled'
@@ -248,6 +256,7 @@ export async function marketRoutes(app: FastifyInstance): Promise<void> {
           : assetClass === 'commodity'
             ? metals.getCandles(symbol, interval, limit)
             : psx.getCandles(symbol, interval, limit),
+      { revalidateWithinMs: REVALIDATE.candles },
     );
 
     applyCacheHeaders(reply, result);
@@ -333,7 +342,7 @@ export async function marketRoutes(app: FastifyInstance): Promise<void> {
         `fundamentals:${symbol}`,
         TTL.fundamentals,
         () => psx.getFundamentals(symbol),
-        { persist: true },
+        { persist: true, revalidateWithinMs: REVALIDATE.fundamentals },
       );
       applyCacheHeaders(reply, result);
       return result.value;
@@ -372,17 +381,40 @@ export async function marketRoutes(app: FastifyInstance): Promise<void> {
 
     const result = await cached<DividendInfo>(key, TTL.dividends, () => psx.getDividends(symbol), {
       persist: true,
+      revalidateWithinMs: REVALIDATE.fundamentals,
     });
     applyCacheHeaders(reply, result);
     return result.value;
     },
   );
 
+  /**
+   * GET /api/economy — Pakistan macro indicators.
+   *
+   * One route for the whole snapshot rather than one per indicator: the tab
+   * shows them together, and ten client requests for ten tiles would be ten
+   * round trips for data that shares a single cache entry.
+   *
+   * Persisted, because the annual series are stable for months and re-fanning
+   * out to the World Bank after every server restart buys nothing.
+   */
+  app.get('/api/economy', async (_request, reply) => {
+    const result = await cached<EconomySnapshot>(
+      'economy:PK',
+      TTL.economy,
+      () => economy.getSnapshot(),
+      { persist: true, revalidateWithinMs: TTL.economy },
+    );
+    applyCacheHeaders(reply, result);
+    return result.value;
+  });
+
   /** GET /api/fx?base=USD */
   app.get<{ Querystring: { base?: string } }>('/api/fx', async (request, reply) => {
     const base = (request.query.base ?? 'USD').toUpperCase();
     const result = await cached<FxRates>(`fx:${base}`, TTL.fx, () => fx.getRates(base), {
       persist: true,
+      revalidateWithinMs: TTL.fx,
     });
     applyCacheHeaders(reply, result);
     return result.value;
@@ -421,7 +453,7 @@ export async function marketRoutes(app: FastifyInstance): Promise<void> {
             `fundamentals:${symbol}`,
             TTL.fundamentals,
             () => psx.getFundamentals(symbol),
-            { persist: true },
+            { persist: true, revalidateWithinMs: REVALIDATE.fundamentals },
           );
           return [symbol, result.value.logoUrl];
         } catch {

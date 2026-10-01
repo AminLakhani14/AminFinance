@@ -116,6 +116,7 @@ export const api = createApi({
     'News',
     'BinanceAccount',
     'Insight',
+    'Economy',
   ],
   // Server-side TTLs already govern real freshness; these control how long an
   // unmounted component's data survives in the client cache.

@@ -325,6 +325,21 @@ export interface OpportunitiesRequest {
    * works, just without absolute figures.
    */
   bookValue?: number;
+  /**
+   * Cash the investor can actually commit each month, in `currency`.
+   *
+   * Derived from the budget book's dependable surplus — the median monthly
+   * saving less its variance. Without it, sizing is expressed as a share of
+   * the existing book, which answers "how should this be weighted" but not
+   * "what can I buy next month". A 3%-of-book suggestion on a 200,000 book is
+   * 6,000, and whether that is affordable is a budget question the ranking
+   * otherwise has no way to ask.
+   *
+   * Optional, and absent whenever there is too little budget history to
+   * establish a rate — in which case the model must size against the book
+   * alone rather than assume a figure.
+   */
+  investableSurplus?: number;
   /** Rate from each asset currency into `currency`, keyed by currency code. */
   fxToDisplay?: Record<string, number>;
   refresh?: boolean;

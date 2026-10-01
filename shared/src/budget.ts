@@ -120,6 +120,79 @@ export interface BudgetSummary {
   currency: string;
 }
 
+/**
+ * One dated payment against a sheet row.
+ *
+ * A `BudgetEntry` answers "what did Dining out cost in September" — a single
+ * figure the month is planned against. It cannot answer "when did I spend it",
+ * because there is exactly one entry per item per month and it has no room for
+ * a second date.
+ *
+ * Logs are that missing detail: many per item, each with its own day, amount,
+ * and note. The entry stays the aggregate the whole page already reads from —
+ * charts, totals, exports, and cloud sync are untouched by this type — and its
+ * `amount` becomes the sum of its logs once any exist.
+ *
+ * Keeping them in a separate table rather than adding rows to `budget` is what
+ * preserves that: every existing aggregation keys on one entry per item, and
+ * making the log rows *be* entries would double-count each payment — once in
+ * the log and once in the aggregate that already includes it.
+ */
+export interface BudgetLog {
+  id: string;
+  /** The sheet row this payment belongs to, e.g. `dining-out`. */
+  itemId: string;
+  /** `YYYY-MM` of `timestamp`, in local time. Written by the persistence layer. */
+  month: string;
+  /** Always positive; the parent entry's `kind` carries the direction. */
+  amount: number;
+  currency: string;
+  /** Epoch ms of the day the money moved. */
+  timestamp: number;
+  /** What it was for — "lunch with the team", "birthday dinner". */
+  note?: string;
+}
+
+/**
+ * When a sheet row's amount changed, and by how much.
+ *
+ * A typed box holds one monthly figure and keeps no memory of how it got
+ * there: type 9,563 on the 14th, raise it to 12,000 on the 20th, and the entry
+ * only knows "12,000". For a ledger that says what was spent on which day,
+ * that history is the whole point, so every change is recorded here as a
+ * signed delta against the day it was made.
+ *
+ * Changes on the same day to the same row merge into one — typing "9", "95",
+ * "9563" as the debounce fires is one entry of 9,563, not three — and a
+ * change that nets to zero disappears. Rows with dated payment logs ignore
+ * these entirely: their logs already are the history.
+ *
+ * Kept beside the entry rather than inside it, like `BudgetLog`, so every
+ * aggregate keeps reading one entry per item. The ledger reconciles the two:
+ * whatever part of an entry's amount no change accounts for (amounts typed
+ * before changes were recorded, a month copied forward, a synced device) is
+ * shown as "not dated" rather than dropped, so the history always adds up to
+ * the month's totals.
+ */
+export interface BudgetChange {
+  id: string;
+  /** The sheet row this change applies to, e.g. `groceries`. */
+  itemId: string;
+  /** `YYYY-MM` of the sheet the change was made on. */
+  month: string;
+  /** Signed change to the row's amount. Negative is a correction downwards. */
+  delta: number;
+  currency: string;
+  /**
+   * Epoch ms of when the money moved, or null when that is unknown — an
+   * amount typed into a past month's sheet has no honest "today" to file it
+   * under, so it waits for the user to give it a date.
+   */
+  timestamp: number | null;
+  /** What it was for, when the amount came with a note (the add-entry dialog). */
+  note?: string;
+}
+
 /** One slice of a month's spending or earning. */
 export interface CategoryTotal {
   category: BudgetCategory;

@@ -70,7 +70,7 @@ interface ChatCompletionChunk {
   error?: { message?: string };
 }
 
-interface JsonSchemaSpec<T> {
+export interface JsonSchemaSpec<T> {
   name: string;
   /** Sent to the endpoint as `response_format.json_schema`. Advisory only. */
   schema: Record<string, unknown>;
@@ -182,17 +182,36 @@ function isStreamingUnsupported(status: number, detail: string): boolean {
   const text = detail.toLowerCase();
   return text.includes('stream') && /not support|unsupported|not implemented|disabled/.test(text);
 }
-async function complete<T>(
+/**
+ * Per-call overrides for `complete`.
+ *
+ * The defaults suit one long answer from a model that serves a single request
+ * at a time. A caller fanning out many short answers to an endpoint that runs
+ * them in parallel bounds its own concurrency, so it skips the shared gate,
+ * and caps tokens and time so one runaway reply cannot hold a slot for
+ * minutes.
+ */
+export interface CompleteOptions {
+  /** Take a token from the shared one-at-a-time AI bucket. Default true. */
+  gate?: boolean;
+  maxTokens?: number;
+  timeoutMs?: number;
+}
+
+export async function complete<T>(
   system: string,
   user: string,
   spec: JsonSchemaSpec<T>,
+  options: CompleteOptions = {},
 ): Promise<T> {
   requireConfigured();
-  await gate();
+  if (options.gate !== false) await gate();
+  const maxTokens = options.maxTokens ?? config.ai.maxTokens;
+  const timeoutMs = options.timeoutMs ?? config.ai.timeoutMs;
 
   const body: Record<string, unknown> = {
     model: config.ai.model,
-    max_tokens: config.ai.maxTokens,
+    max_tokens: maxTokens,
     // Deterministic-ish: this is analysis, not creative writing, and low
     // variance also keeps the JSON well-formed more often.
     temperature: 0.3,
@@ -226,7 +245,7 @@ async function complete<T>(
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), config.ai.timeoutMs);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   /** One attempt at the given transport. Returns null to mean "retry unstreamed". */
   async function attempt(stream: boolean): Promise<StreamResult | null> {
@@ -299,7 +318,7 @@ async function complete<T>(
       // are in the call, so the usual cause is a large ranking rather than a
       // dead endpoint, and the fix is fewer assets or a longer ceiling.
       throw AppError.upstreamTimeout(
-        `${PROVIDER} (${config.ai.model}) after ${Math.round(config.ai.timeoutMs / 1000)}s. ` +
+        `${PROVIDER} (${config.ai.model}) after ${Math.round(timeoutMs / 1000)}s. ` +
           `A ranking over many assets takes proportionally longer — rank fewer at once, ` +
           `or raise AI_TIMEOUT_MS`,
       );
@@ -337,10 +356,10 @@ async function complete<T>(
     throw AppError.providerError(
       PROVIDER,
       result.content.trim()
-        ? `${config.ai.model} hit the ${config.ai.maxTokens}-token limit part-way through, so the ` +
+        ? `${config.ai.model} hit the ${maxTokens}-token limit part-way through, so the ` +
           `reply was cut off mid-JSON. Raise AI_MAX_TOKENS — a ranking over many assets needs ` +
           `more room than a single insight.`
-        : `${config.ai.model} hit the ${config.ai.maxTokens}-token limit before producing an answer. ` +
+        : `${config.ai.model} hit the ${maxTokens}-token limit before producing an answer. ` +
           `Raise AI_MAX_TOKENS, or set AI_REASONING_EFFORT=none so thinking does not consume the budget.`,
     );
   }
@@ -764,7 +783,7 @@ const PORTFOLIO_REVIEW_OUTPUT = z.object({
   risks: z.array(insightPointOutput),
 });
 
-const SYSTEM_PROMPT = `You are a financial analyst assisting a private investor who tracks their own portfolio.
+export const SYSTEM_PROMPT = `You are a financial analyst assisting a private investor who tracks their own portfolio.
 
 Ground every claim in the data provided in the user message. You have no live market access — if a figure is not in the data given to you, say so rather than estimating it.
 
@@ -785,7 +804,7 @@ Never present your output as personalised financial advice or a guarantee. You a
 Respond with a single JSON object matching the requested schema. No prose, no markdown fences, no commentary outside the JSON.`;
 
 /** How each class is described to the model, so the prompt reads naturally. */
-const ASSET_DESCRIPTION: Record<AssetClass, string> = {
+export const ASSET_DESCRIPTION: Record<AssetClass, string> = {
   stock: 'PSX-listed equity',
   crypto: 'cryptocurrency',
   commodity: 'precious metal, quoted per troy ounce on the spot market',
@@ -804,7 +823,7 @@ function num(value: number | null, digits = 2): string {
  * all tends to assume one exists and invent it, whereas an explicit gap is
  * reliably reported as a gap.
  */
-function formatTechnicals(technicals: TechnicalSnapshot | null, currency: string): string {
+export function formatTechnicals(technicals: TechnicalSnapshot | null, currency: string): string {
   if (!technicals) {
     return '## Chart\nNo indicator data available — too few candles. Set chartRead and levels to null.';
   }
@@ -1118,6 +1137,16 @@ export async function rankOpportunities(input: {
    * which is better than multiplying by a guess.
    */
   bookValue?: number;
+  /**
+   * Cash the investor can commit each month, in `currency`, from their budget.
+   *
+   * Changes the question the sizing answers: without it, a percentage of the
+   * book says how the portfolio *should be weighted*; with it, the model can
+   * be told what is actually affordable next month. Absent when the budget
+   * has too little history to establish a rate — never defaulted, since a
+   * guessed figure would drive a real purchase.
+   */
+  investableSurplus?: number;
   /** Rate from each asset currency into `currency`, keyed by currency code. */
   fxToDisplay?: Record<string, number>;
 }): Promise<Omit<OpportunitySet, 'skipped'>> {
@@ -1145,6 +1174,16 @@ export async function rankOpportunities(input: {
     '',
     'For every asset except `hold`, give `sizing`: how much of the TOTAL BOOK to move, in percentage points. Size it to conviction and to what the book already holds — a high-conviction idea in an under-weighted asset earns more than a marginal one, and an asset already at a heavy weight should be added to sparingly or not at all. Keep any single move at 10% of the book or less. Set `sizing` to null when the action is `hold`.',
     '',
+    // The budget constraint, when the budget knows one. Stated as a hard
+    // ceiling on the sum of additions rather than a per-asset limit: the
+    // investor has one surplus, and three suggestions that each fit inside it
+    // still cannot all be funded.
+    ...(input.investableSurplus !== undefined && input.investableSurplus > 0
+      ? [
+          `This investor can commit about ${Math.round(input.investableSurplus)} ${input.currency} per month from their budget — that is the money available for new purchases, and it is not the same as the book being large. The TOTAL of every buy and accumulate you suggest must be fundable from roughly one to three months of that, so size the additions to fit it and say in the rationale which ones come first. Do not propose a set of purchases that together need more than that. Reductions are not constrained this way, since selling raises cash rather than spending it.`,
+          '',
+        ]
+      : []),
     'Pacing: use `now` when the price is already at an attractive level, `staged` to average in over weeks, and `on-dip` when the entry zone sits below the current price. Do not say `now` for something whose entry zone you have placed under the current price.',
     '',
     'Every asset also needs `plainEnglish`: the same verdict written for someone who has never bought a share and does not know what RSI, MACD, a moving average or a Bollinger band is. Two or three short sentences. Name no indicator and use no market jargon — not "oversold", "resistance", "momentum" or "the trend". Say what is happening to the price in ordinary words (it has been falling for weeks; it costs more than it did in January; it is near the cheapest it has been this year), say what you are suggesting and why, and say plainly what would make it a bad idea. For a company, say what the company actually does. Write it as you would explain it to a friend over tea, not as a summary of the technical note.',

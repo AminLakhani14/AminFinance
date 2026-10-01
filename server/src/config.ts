@@ -25,6 +25,12 @@ const envSchema = z.object({
   ALPHAVANTAGE_API_KEY: z.string().default(''),
   COINGECKO_API_KEY: z.string().default(''),
   TWELVEDATA_API_KEY: z.string().default(''),
+  /**
+   * State Bank of Pakistan — easydata.sbp.org.pk. Optional: without it the
+   * Economy tab serves annual World Bank series, which is correct but coarse.
+   * With it, SBP's weekly reserves and policy rate can replace them.
+   */
+  SBP_API_KEY: z.string().default(''),
   BINANCE_API_KEY: z.string().default(''),
   BINANCE_API_SECRET: z.string().default(''),
 
@@ -93,6 +99,12 @@ export const providers = {
   alphaVantage: Boolean(env.ALPHAVANTAGE_API_KEY),
   coingecko: Boolean(env.COINGECKO_API_KEY),
   twelveData: Boolean(env.TWELVEDATA_API_KEY),
+  /**
+   * Gates the higher-frequency reserves path only. Economic data still works
+   * without it — World Bank needs no key — so this is a quality upgrade, not a
+   * capability switch.
+   */
+  sbp: Boolean(env.SBP_API_KEY),
   /** Public Binance endpoints need no key; this gates the signed ones only. */
   binanceAccount: Boolean(env.BINANCE_API_KEY && env.BINANCE_API_SECRET),
   /**
@@ -121,6 +133,7 @@ export const config = {
     alphaVantage: env.ALPHAVANTAGE_API_KEY,
     coingecko: env.COINGECKO_API_KEY,
     twelveData: env.TWELVEDATA_API_KEY,
+    sbp: env.SBP_API_KEY,
     binanceKey: env.BINANCE_API_KEY,
     binanceSecret: env.BINANCE_API_SECRET,
   },
@@ -144,7 +157,16 @@ export function describeCapabilities(): string {
     ['Finnhub (stock quotes, news)', providers.finnhub, 'FINNHUB_API_KEY'],
     ['Alpha Vantage (dividends)', providers.alphaVantage, 'ALPHAVANTAGE_API_KEY'],
     ['CoinGecko (coin metadata)', providers.coingecko, 'COINGECKO_API_KEY'],
-    ['Twelve Data (stock history)', providers.twelveData, 'TWELVEDATA_API_KEY'],
+    [
+      `Metals (spot, charts)${providers.twelveData ? ' — Twelve Data' : ' — keyless fallback'}`,
+      true,
+      'TWELVEDATA_API_KEY for higher quality',
+    ],
+    [
+      `Economy (Pakistan macro)${providers.sbp ? ' — SBP weekly' : ' — World Bank annual'}`,
+      true,
+      'SBP_API_KEY for weekly reserves',
+    ],
     [
       `AI insights${providers.ai ? ` (${config.ai.model})` : ''}`,
       providers.ai,

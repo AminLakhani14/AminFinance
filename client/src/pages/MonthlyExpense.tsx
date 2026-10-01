@@ -32,6 +32,7 @@ import { useBudget } from '@/features/budget/useBudget';
 import { BudgetEntryDialog } from '@/features/budget/BudgetEntryDialog';
 import { CategoryBreakdown } from '@/features/budget/CategoryBreakdown';
 import { BudgetSheet } from '@/features/budget/BudgetSheet';
+import { BudgetHistory } from '@/features/budget/BudgetHistory';
 import { ExportMenu } from '@/features/budget/ExportMenu';
 import { SavingsTrend } from '@/features/budget/SavingsTrend';
 import { buildColorMap } from '@/components/charts/palette';
@@ -70,6 +71,8 @@ export function MonthlyExpense() {
     previous,
     isLoading,
     itemAmounts,
+    itemLogs,
+    changes,
     currency,
   } = useBudget(month, previousMonth);
 
@@ -282,6 +285,7 @@ export function MonthlyExpense() {
             month={month}
             currency={currency}
             amounts={itemAmounts}
+            logs={itemLogs}
             privacyMode={privacyMode}
           />
         )}
@@ -289,6 +293,17 @@ export function MonthlyExpense() {
 
       {hasActivity ? (
         <>
+          {/* Right under the sheet, so an amount typed above shows up on its
+              day straight away. */}
+          <BudgetHistory
+            month={month}
+            entries={entries}
+            logs={itemLogs}
+            changes={changes}
+            currency={currency}
+            privacyMode={privacyMode}
+          />
+
           <div className="grid gap-6 lg:grid-cols-2">
             <Card>
               <CardHeader

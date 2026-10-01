@@ -19,9 +19,10 @@ import type {
   CandleInterval,
 } from '@aminfinance/shared';
 import { httpGetJson } from '../lib/http.js';
-import { AppError } from '../lib/errors.js';
+import { AppError, isAppError } from '../lib/errors.js';
 import { acquire, retryAfterSeconds } from '../lib/rateLimit.js';
 import { config } from '../config.js';
+import * as free from './metalsFree.js';
 
 const BASE = 'https://api.twelvedata.com';
 const PROVIDER = 'Twelve Data';
@@ -123,7 +124,7 @@ interface RawQuote {
   timestamp?: number;
 }
 
-export async function getQuote(symbol: string): Promise<Quote> {
+async function getQuoteTwelveData(symbol: string): Promise<Quote> {
   requireConfigured();
   const normalized = normalizeSymbol(symbol);
   const pair = requirePair(normalized);
@@ -198,7 +199,7 @@ interface RawSeries {
   }>;
 }
 
-export async function getCandles(
+async function getCandlesTwelveData(
   symbol: string,
   interval: CandleInterval,
   limit: number,
@@ -235,4 +236,49 @@ export async function getCandles(
     .reverse();
 
   return { symbol: normalized, assetClass: 'commodity', interval, candles };
+}
+
+/**
+ * Public entry points: Twelve Data when a key is configured, keyless otherwise.
+ *
+ * The fallback is not merely for the unconfigured case. Twelve Data's free tier
+ * is 8 requests/minute and 800/day, and it reports quota exhaustion as a
+ * `rate_limited` error — so a key that works at breakfast can fail by lunchtime.
+ * Falling through on that too means a chart degrades to a slightly different
+ * data source instead of an empty panel.
+ *
+ * A `not_found` is never retried against the fallback: an unsupported symbol is
+ * unsupported on both, and retrying would turn one clear 404 into two calls.
+ */
+function shouldFallback(err: unknown): boolean {
+  if (!isAppError(err)) return true;
+  return err.code !== 'not_found' && err.code !== 'bad_request';
+}
+
+export async function getQuote(symbol: string): Promise<Quote> {
+  const normalized = normalizeSymbol(symbol);
+  if (!config.providers.twelveData) return free.getQuote(normalized);
+
+  try {
+    return await getQuoteTwelveData(normalized);
+  } catch (err) {
+    if (!shouldFallback(err)) throw err;
+    return free.getQuote(normalized);
+  }
+}
+
+export async function getCandles(
+  symbol: string,
+  interval: CandleInterval,
+  limit: number,
+): Promise<CandleSeries> {
+  const normalized = normalizeSymbol(symbol);
+  if (!config.providers.twelveData) return free.getCandles(normalized, interval, limit);
+
+  try {
+    return await getCandlesTwelveData(normalized, interval, limit);
+  } catch (err) {
+    if (!shouldFallback(err)) throw err;
+    return free.getCandles(normalized, interval, limit);
+  }
 }

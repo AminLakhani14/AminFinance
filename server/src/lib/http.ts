@@ -60,38 +60,39 @@ export async function httpGet(url: string, options: FetchOptions): Promise<Respo
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
+    // Only the transport is retried here: `once` throws for timeouts and
+    // network failures, nothing else.
+    let res: Response;
     try {
-      const res = await once(url, options);
-
-      if (res.ok) return res;
-
-      // Upstream rate limit — surface immediately with its own retry hint
-      // rather than burning our retry budget making it worse.
-      if (res.status === 429) {
-        const retryAfter = Number(res.headers.get('retry-after') ?? 60);
-        throw AppError.rateLimited(options.provider, Number.isFinite(retryAfter) ? retryAfter : 60);
-      }
-
-      if (RETRYABLE_STATUS.has(res.status) && attempt < retries) {
-        await sleep(300 * 2 ** attempt);
-        continue;
-      }
-
-      throw AppError.providerError(
-        options.provider,
-        `${options.provider} returned HTTP ${res.status}.`,
-      );
+      res = await once(url, options);
     } catch (err) {
       lastError = err;
-      // Don't retry deliberate AppErrors other than timeouts.
-      const isTimeout = err instanceof AppError && err.code === 'upstream_timeout';
-      const isNetwork = err instanceof AppError && err.code === 'provider_error';
-      if (attempt < retries && (isTimeout || isNetwork)) {
+      if (attempt < retries) {
         await sleep(300 * 2 ** attempt);
         continue;
       }
       throw err;
     }
+
+    if (res.ok) return res;
+
+    // Upstream rate limit — surface immediately with its own retry hint
+    // rather than burning our retry budget making it worse.
+    if (res.status === 429) {
+      const retryAfter = Number(res.headers.get('retry-after') ?? 60);
+      throw AppError.rateLimited(options.provider, Number.isFinite(retryAfter) ? retryAfter : 60);
+    }
+
+    if (RETRYABLE_STATUS.has(res.status) && attempt < retries) {
+      await sleep(300 * 2 ** attempt);
+      continue;
+    }
+
+    // Any other status is the upstream's answer, not a blip. Retrying a 404
+    // or 403 used to happen here — the status error was caught below and
+    // mistaken for a network failure — which cost two backoffs (~1s) on every
+    // call to a moved or forbidden endpoint and returned the same answer.
+    throw AppError.providerError(options.provider, `${options.provider} returned HTTP ${res.status}.`);
   }
 
   throw lastError instanceof Error

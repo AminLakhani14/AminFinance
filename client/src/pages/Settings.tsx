@@ -15,6 +15,7 @@ import { CloudSyncCard } from '@/features/auth/CloudSyncCard';
 
 import { SUPPORTED_CURRENCIES } from '@/lib/calc/currency';
 import { SetupChecklist } from '@/features/settings/SetupChecklist';
+import { PlanningSettingsCard } from '@/features/planning/PlanningSettingsCard';
 import { useConfirm } from '@/components/ui/useConfirm';
 
 const CURRENCIES = SUPPORTED_CURRENCIES;
@@ -134,6 +135,8 @@ export function Settings() {
           </Field>
         </CardBody>
       </Card>
+
+      <PlanningSettingsCard />
 
       <SetupChecklist />
 

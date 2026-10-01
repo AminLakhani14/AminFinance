@@ -18,6 +18,17 @@ export const TROY_OZ_PER_TOLA = 3 / 8;
 /** Grams per tola, for anyone weighing rather than counting. */
 export const GRAMS_PER_TOLA = 11.6638038;
 
+/**
+ * Grams in one troy ounce — exact, by definition.
+ *
+ * Needed by the zakat calculation, where nisab is defined as a weight in
+ * grams (87.48g gold, 612.36g silver) while every spot quote arrives per
+ * troy ounce. The full constant rather than a rounded 31.1, because nisab is
+ * a yes/no threshold and a book sitting close to it must not cross on a
+ * rounding artefact.
+ */
+export const GRAMS_PER_TROY_OZ = 31.1034768;
+
 export function tolaToTroyOz(tola: number): number {
   return tola * TROY_OZ_PER_TOLA;
 }

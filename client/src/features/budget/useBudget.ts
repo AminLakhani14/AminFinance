@@ -7,7 +7,13 @@
  */
 import { useEffect, useMemo } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import type { BudgetEntry, BudgetSummary, CategoryTotal } from '@aminfinance/shared';
+import type {
+  BudgetChange,
+  BudgetEntry,
+  BudgetLog,
+  BudgetSummary,
+  CategoryTotal,
+} from '@aminfinance/shared';
 import { adoptLegacyEntries, db } from '@/lib/db';
 import { itemForCategory } from '@/lib/calc/budgetItems';
 import { useAppSelector } from '@/app/hooks';
@@ -34,6 +40,10 @@ export interface BudgetState {
   isBookEmpty: boolean;
   /** This month's entries keyed by predefined item id, for the fill-in sheet. */
   itemAmounts: Map<string, BudgetEntry>;
+  /** This month's dated payments keyed by item id, newest first within each. */
+  itemLogs: Map<string, BudgetLog[]>;
+  /** This month's recorded changes to typed rows, for the history. */
+  changes: BudgetChange[];
   currency: string;
 }
 
@@ -75,7 +85,22 @@ export function useBudget(month: string, previousMonth: string): BudgetState {
   // so reading all of them is cheaper than twelve indexed queries.
   const allEntries = useLiveQuery(() => db.budget.toArray(), []);
 
+  // One read for the month rather than one per row: a sheet is eighty items,
+  // and eighty live queries would each re-run on every write to the table.
+  const logRows = useLiveQuery(
+    () => db.budgetLogs.where('month').equals(month).toArray(),
+    [month],
+  );
+
+  // The history's dated detail for typed rows. One read for the month, like
+  // the logs, rather than one per row.
+  const changeRows = useLiveQuery(
+    () => db.budgetChanges.where('month').equals(month).toArray(),
+    [month],
+  );
+
   const rows = useMemo(() => entries ?? [], [entries]);
+  const changes = useMemo(() => changeRows ?? [], [changeRows]);
 
   const summary = useMemo(
     () => summarize(rows, month, currency),
@@ -97,6 +122,18 @@ export function useBudget(month: string, previousMonth: string): BudgetState {
     return map;
   }, [rows]);
 
+  const itemLogs = useMemo(() => {
+    const map = new Map<string, BudgetLog[]>();
+    for (const log of logRows ?? []) {
+      const list = map.get(log.itemId);
+      if (list) list.push(log);
+      else map.set(log.itemId, [log]);
+    }
+    // Newest first, matching how the one-off list below the sheet reads.
+    for (const list of map.values()) list.sort((a, b) => b.timestamp - a.timestamp);
+    return map;
+  }, [logRows]);
+
   const expenseCategories = useMemo(() => byCategory(rows, 'expense'), [rows]);
   const incomeCategories = useMemo(() => byCategory(rows, 'income'), [rows]);
   const trend = useMemo(() => monthlyTrend(allEntries ?? [], 12), [allEntries]);
@@ -112,6 +149,8 @@ export function useBudget(month: string, previousMonth: string): BudgetState {
     isEmpty: entries !== undefined && rows.length === 0,
     isBookEmpty: allEntries !== undefined && allEntries.length === 0,
     itemAmounts,
+    itemLogs,
+    changes,
     currency,
   };
 }

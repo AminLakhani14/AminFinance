@@ -21,6 +21,8 @@ import {
   ChevronDown,
   House,
   Landmark,
+  List,
+  Plus,
   Repeat,
   ShoppingBag,
   ShoppingCart,
@@ -29,18 +31,22 @@ import {
   Wallet,
   type LucideIcon,
 } from 'lucide-react';
-import type { BudgetEntry } from '@aminfinance/shared';
+import type { BudgetEntry, BudgetLog } from '@aminfinance/shared';
 import { setBudgetItemAmount } from '@/lib/db';
 import { itemGroups, type BudgetGroup, type BudgetItem } from '@/lib/calc/budgetItems';
 import { Card } from '@/components/ui/Card';
-import { formatCurrency } from '@/lib/format';
+import { formatCurrency, maskIfPrivate } from '@/lib/format';
 import { cn } from '@/lib/utils';
+import { ItemLog } from './ItemLog';
+import { useLinkedDebt } from '@/features/planning/useLinkedDebt';
 
 interface BudgetSheetProps {
   month: string;
   currency: string;
   /** Existing entries for this month, keyed by item id. */
   amounts: Map<string, BudgetEntry>;
+  /** This month's dated payments, keyed by item id. */
+  logs: Map<string, BudgetLog[]>;
   privacyMode: boolean;
 }
 
@@ -64,7 +70,13 @@ const ICONS: Record<string, LucideIcon> = {
   ShoppingBag,
 };
 
-export function BudgetSheet({ month, currency, amounts, privacyMode }: BudgetSheetProps) {
+export function BudgetSheet({
+  month,
+  currency,
+  amounts,
+  logs,
+  privacyMode,
+}: BudgetSheetProps) {
   const groups = itemGroups();
 
   return (
@@ -82,6 +94,7 @@ export function BudgetSheet({ month, currency, amounts, privacyMode }: BudgetShe
           month={month}
           currency={currency}
           amounts={amounts}
+          logs={logs}
           privacyMode={privacyMode}
         />
       ))}
@@ -95,6 +108,7 @@ interface GroupCardProps {
   month: string;
   currency: string;
   amounts: Map<string, BudgetEntry>;
+  logs: Map<string, BudgetLog[]>;
   privacyMode: boolean;
 }
 
@@ -104,6 +118,7 @@ function GroupCard({
   month,
   currency,
   amounts,
+  logs,
   privacyMode,
 }: GroupCardProps) {
   const [showAll, setShowAll] = useState(false);
@@ -124,8 +139,12 @@ function GroupCard({
 
   const hidden = items.filter((i) => !i.common);
   // A card with something already filled in below the fold must not hide it,
-  // or a carried-forward amount would silently vanish from view.
-  const hasHiddenValue = hidden.some((i) => (amounts.get(i.id)?.amount ?? 0) > 0);
+  // or a carried-forward amount would silently vanish from view. Logged
+  // payments count too: a row whose entries were all deleted still has a log
+  // panel the user may be mid-way through using.
+  const hasHiddenValue = hidden.some(
+    (i) => (amounts.get(i.id)?.amount ?? 0) > 0 || (logs.get(i.id)?.length ?? 0) > 0,
+  );
   const expanded = showAll || hasHiddenValue;
   const visible = expanded ? items : items.filter((i) => i.common);
 
@@ -177,6 +196,7 @@ function GroupCard({
               month={month}
               currency={currency}
               entry={amounts.get(item.id)}
+              logs={logs.get(item.id)}
               privacyMode={privacyMode}
               accent={group.accent}
             />
@@ -233,6 +253,7 @@ interface SheetRowProps {
   month: string;
   currency: string;
   entry: BudgetEntry | undefined;
+  logs: BudgetLog[] | undefined;
   privacyMode: boolean;
   accent: string;
 }
@@ -242,12 +263,19 @@ function SheetRow({
   month,
   currency,
   entry,
+  logs,
   privacyMode,
   accent,
 }: SheetRowProps) {
   const stored = entry?.amount;
   const [value, setValue] = useState(() => (stored ? String(stored) : ''));
   const [saved, setSaved] = useState(false);
+  const [logOpen, setLogOpen] = useState(false);
+
+  const entries = logs ?? [];
+  // Logs own the row's total once any exist — the box becomes a display of
+  // their sum, and typing into it is disabled rather than silently discarded.
+  const logged = entries.length > 0;
 
   // Track what we last wrote, so the effect below can tell an external change
   // (month switch, carry-forward, undo) from the echo of our own save.
@@ -306,7 +334,8 @@ function SheetRow({
   const rowAccent = isDeduction ? 'var(--negative)' : accent;
 
   return (
-    <li className="group/row flex items-center gap-2 border-b border-border/40 py-1 last:border-0">
+    <li className="border-b border-border/40 last:border-0">
+      <div className="group/row flex items-center gap-2 py-1">
       {/* A filled row gets a small accent bar, so a glance down the card shows
           what is done without reading any numbers. */}
       <span
@@ -324,6 +353,13 @@ function SheetRow({
       >
         {isDeduction ? <span aria-hidden>− </span> : null}
         {item.label}
+        {/* The count is the affordance that says this row holds a history —
+            without it, a read-only box looks broken rather than derived. */}
+        {logged ? (
+          <span className="ml-1.5 text-[11px] text-text-subtle nums">
+            ×{entries.length}
+          </span>
+        ) : null}
       </label>
 
       {/* Saved tick reserves its slot whether or not it is showing, so a row
@@ -331,6 +367,29 @@ function SheetRow({
       <span className="w-3.5 shrink-0" aria-hidden>
         {saved ? <Check className="size-3.5 text-positive" /> : null}
       </span>
+
+      {/* Always rendered, so every row is one click from a log — and it keeps
+          the boxes in a column aligned, which a conditional button would not. */}
+      <button
+        type="button"
+        onClick={() => setLogOpen((v) => !v)}
+        aria-expanded={logOpen}
+        aria-label={
+          logged
+            ? `${logOpen ? 'Hide' : 'Show'} the ${entries.length} logged ${item.label} entries`
+            : `Log a dated ${item.label} entry`
+        }
+        className={cn(
+          'flex size-6 shrink-0 items-center justify-center rounded-md transition-all',
+          logOpen
+            ? 'bg-surface-raised text-text'
+            : logged
+              ? 'text-text-muted hover:bg-surface-raised hover:text-text'
+              : 'text-text-subtle opacity-0 hover:bg-surface-raised hover:text-text focus-visible:opacity-100 group-hover/row:opacity-100',
+        )}
+      >
+        {logged ? <List className="size-3.5" /> : <Plus className="size-3.5" />}
+      </button>
 
       <div className="relative w-[7.5rem] shrink-0">
         <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[10px] font-medium text-text-subtle">
@@ -349,10 +408,21 @@ function SheetRow({
           onChange={(e) => handleChange(e.target.value)}
           onBlur={handleBlur}
           placeholder="—"
-          aria-label={`${item.label} amount in ${currency}`}
+          // Read-only rather than disabled: the total is still worth selecting
+          // and reading out, and a disabled field would drop out of the tab
+          // order that the log button beside it sits in.
+          readOnly={logged}
+          onClick={logged ? () => setLogOpen(true) : undefined}
+          aria-label={
+            logged
+              ? `${item.label} total in ${currency}, from ${entries.length} logged entries`
+              : `${item.label} amount in ${currency}`
+          }
+          title={logged ? 'Total of the logged entries — open the log to change it' : undefined}
           className={cn(
             'h-8 w-full rounded-lg border bg-surface-raised/70 pl-8 pr-2 text-right text-[13px] nums',
             'transition-colors focus:outline-none focus:ring-1',
+            logged && 'cursor-pointer',
             filled
               ? 'border-border-strong text-text'
               : 'border-border/70 text-text-muted hover:border-border-strong',
@@ -370,6 +440,82 @@ function SheetRow({
           }
         />
       </div>
+      </div>
+
+      {/* What this row is paying off, when a debt is linked to it. Rendered
+          under the row rather than beside it: the balance is context for the
+          amount, not another figure competing with it. */}
+      <LinkedDebtLine itemId={item.id} month={month} currency={currency} privacyMode={privacyMode} />
+
+      {/* Mounted only while open, so each panel starts on today's date and an
+          empty amount rather than holding a stale half-typed entry. */}
+      {logOpen ? (
+        <ItemLog
+          item={item}
+          month={month}
+          currency={currency}
+          logs={entries}
+          privacyMode={privacyMode}
+          accent={rowAccent}
+        />
+      ) : null}
     </li>
+  );
+}
+
+/**
+ * The debt this row pays down, and what is left of it.
+ *
+ * Renders nothing when the row has no linked debt, which is the common case —
+ * a sheet of eighty rows must not gain eighty sub-lines because one of them
+ * happens to pay a loan.
+ *
+ * The balance shown is what remains *after* this month's recorded payment,
+ * because that is the number the user is about to act on. Showing the
+ * pre-payment figure next to a box they have just filled in would read as
+ * though the payment had not registered.
+ */
+function LinkedDebtLine({
+  itemId,
+  month,
+  currency,
+  privacyMode,
+}: {
+  itemId: string;
+  month: string;
+  currency: string;
+  privacyMode: boolean;
+}) {
+  const linked = useLinkedDebt(itemId, month);
+  if (!linked) return null;
+
+  const { liability, progress, thisMonth } = linked;
+  const money = (value: number) =>
+    maskIfPrivate(formatCurrency(value, currency), privacyMode);
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 pb-1.5 pl-2.5 text-[11px]">
+      <span className="text-text-muted">{liability.label}</span>
+      {progress.balance <= 0 ? (
+        <span className="font-medium text-positive">cleared</span>
+      ) : (
+        <>
+          <span className="font-medium text-text nums">{money(progress.balance)} left</span>
+          {thisMonth && thisMonth.interestPaid > 0 ? (
+            <span className="text-text-subtle nums">
+              ({money(thisMonth.principalPaid)} off principal ·{' '}
+              {money(thisMonth.interestPaid)} interest)
+            </span>
+          ) : null}
+          {progress.growing ? (
+            <span className="text-negative">payment below interest</span>
+          ) : progress.monthsRemaining !== null ? (
+            <span className="text-text-subtle">
+              ~{progress.monthsRemaining} mo left
+            </span>
+          ) : null}
+        </>
+      )}
+    </div>
   );
 }

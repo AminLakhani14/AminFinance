@@ -34,6 +34,21 @@ const BUDGETS: Record<string, { capacity: number; perSecond: number }> = {
   // 25/day. One token every ~an hour, tiny burst allowance.
   alphaVantage: { capacity: 3, perSecond: 0.0003 },
   twelveData: { capacity: 5, perSecond: 0.15 },
+  // World Bank publishes no hard quota but asks for reasonable use. One
+  // snapshot fans out to ten calls, so capacity covers a whole snapshot at
+  // once while the refill keeps repeat loads cache-bound.
+  worldBank: { capacity: 12, perSecond: 1 },
+  // IMF SDMX: no published quota. A snapshot makes three calls and the result
+  // is cached for hours, so this only ever needs to cover one burst.
+  imf: { capacity: 6, perSecond: 0.5 },
+  // Keyless metals fallback (gold-api + Yahoo charts). Neither publishes a
+  // quota, so this is self-imposed and gentle — same reasoning as psx.
+  metalsFree: { capacity: 10, perSecond: 1 },
+  // PSX prices and candles since the Data Portal dropped its JSON endpoints.
+  // Unofficial and unmetered as far as anyone documents, so gentle — but each
+  // token covers a whole batch (a scan or a socket of up to 40 histories),
+  // not one symbol.
+  tradingview: { capacity: 10, perSecond: 2 },
   // A local model serves one request at a time and takes minutes per answer.
   // Capacity 1 keeps a second insight from queueing behind the first and
   // timing out; the queue wait in `acquire` rejects fast rather than piling on.

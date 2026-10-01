@@ -21,6 +21,9 @@ import type {
   OpportunitiesRequest,
   MarketListing,
   AssetClass,
+  EconomySnapshot,
+  TradingDesk,
+  TradingRequest,
 } from '@aminfinance/shared';
 import { api } from './api';
 
@@ -133,8 +136,40 @@ export const marketApi = api.injectEndpoints({
         `/api/market/${assetClass}${quote ? `?quote=${encodeURIComponent(quote)}` : ''}`,
     }),
 
+    /**
+     * Pakistan macro indicators — reserves, trade, CPI, USD/PKR.
+     *
+     * One query for the whole snapshot: the tab renders the tiles together and
+     * the server caches them as a single entry, so splitting this per indicator
+     * would add round trips without adding freshness.
+     */
+    getEconomy: builder.query<EconomySnapshot, void>({
+      query: () => '/api/economy',
+      providesTags: ['Economy'],
+    }),
+
     rankOpportunities: builder.mutation<OpportunitySet, OpportunitiesRequest>({
       query: (body) => ({ url: '/api/ai/opportunities', method: 'POST', body }),
+    }),
+
+    /**
+     * Trading desk: buy zone, sell targets, stop and hold period per asset.
+     *
+     * A query, though it POSTs, because the page polls it: plans arrive at
+     * once from the server's chart engine and the AI reviews land over the
+     * next several seconds, so the page re-asks while `aiPending` is above
+     * zero. Each poll is a few milliseconds server-side.
+     */
+    getTradingDesk: builder.query<TradingDesk, TradingRequest>({
+      query: (body) => ({ url: '/api/ai/trading', method: 'POST', body }),
+    }),
+
+    /**
+     * The same endpoint with `refresh: true` — reruns the screen and the AI
+     * reviews. A mutation so it fires once on click rather than on every poll.
+     */
+    planTrades: builder.mutation<TradingDesk, TradingRequest>({
+      query: (body) => ({ url: '/api/ai/trading', method: 'POST', body }),
     }),
   }),
 });
@@ -153,5 +188,8 @@ export const {
   useAnalyzeAssetMutation,
   useReviewPortfolioMutation,
   useGetMarketListingQuery,
+  useGetEconomyQuery,
   useRankOpportunitiesMutation,
+  useGetTradingDeskQuery,
+  usePlanTradesMutation,
 } = marketApi;

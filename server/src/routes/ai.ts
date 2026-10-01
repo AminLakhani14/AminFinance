@@ -205,8 +205,16 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
       '/api/ai/opportunities',
       async (request, reply) => {
         requireConfigured();
-        const { holdings, candidates, currency, bookValue, fxToDisplay, refresh, assetClass } =
-          request.body ?? {};
+        const {
+          holdings,
+          candidates,
+          currency,
+          bookValue,
+          investableSurplus,
+          fxToDisplay,
+          refresh,
+          assetClass,
+        } = request.body ?? {};
         if (!Array.isArray(holdings) || holdings.length === 0) {
           throw AppError.badRequest('holdings must be a non-empty array');
         }
@@ -236,7 +244,17 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           ...inScope.map((h) => `${h.symbol}:${h.quantity}:${h.averageCost}`).sort(),
           ...extra.map((s) => `+${s}`).sort(),
         ].join('|');
-        const key = `ai:opportunities:${assetClass ?? 'all'}:${currency}:${fingerprint}`;
+        // The surplus is part of the key, not just the prompt: it is now a
+        // spending ceiling on the suggested purchases, so a book that has not
+        // changed but a budget that has must produce a new plan rather than
+        // replay yesterday's against money that is no longer there. Bucketed
+        // to the nearest thousand so ordinary drift does not evict the cache
+        // on every request.
+        const surplusBucket =
+          typeof investableSurplus === 'number' && Number.isFinite(investableSurplus)
+            ? Math.round(investableSurplus / 1000)
+            : 'none';
+        const key = `ai:opportunities:${assetClass ?? 'all'}:${currency}:s${surplusBucket}:${fingerprint}`;
 
         if (!refresh) {
           const hit = cacheGet<OpportunitySet>(key);
@@ -382,6 +400,13 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
           // propagate straight into every suggested quantity.
           ...(typeof bookValue === 'number' && Number.isFinite(bookValue) && bookValue > 0
             ? { bookValue }
+            : {}),
+          // Same guard: a non-finite or negative surplus would become a
+          // spending ceiling in the prompt.
+          ...(typeof investableSurplus === 'number' &&
+          Number.isFinite(investableSurplus) &&
+          investableSurplus > 0
+            ? { investableSurplus }
             : {}),
           ...(fxToDisplay ? { fxToDisplay } : {}),
         });

@@ -44,6 +44,7 @@ import { AssetSearchPanel } from '@/features/ai/AssetSearchPanel';
 import { InstrumentLogo } from '@/components/ui/InstrumentLogo';
 import { useIssuerLogos } from '@/features/market/useIssuerLogos';
 import { usePortfolio } from '@/features/portfolio/usePortfolio';
+import { useSurplus } from '@/features/planning/useSurplus';
 import { useRankOpportunitiesMutation, useGetMarketListingQuery } from '@/services/endpoints';
 import { toApiError } from '@/services/api';
 import { formatCurrency, formatDate, formatQuantity } from '@/lib/format';
@@ -131,6 +132,10 @@ const lastRequestedKey: Partial<Record<AssetClass, string>> = {};
 export function Suggestions() {
   const { holdings, summary, convert, displayCurrency, isEmpty, isLoading: portfolioLoading } =
     usePortfolio();
+  // Dependable, not the median: committing the median overcommits half the
+  // time, and a suggested purchase that needs the grocery money is worse than
+  // a smaller one.
+  const { dependable: dependableSurplus } = useSurplus();
   const [candidateInput, setCandidateInput] = useState('');
 
   /**
@@ -219,11 +224,16 @@ export function Suggestions() {
       // derived from the same converter the holdings table uses, so a suggested
       // quantity and the position it refers to agree on the rate.
       bookValue: summary.totalValue,
+      // What the budget says can actually be committed each month, so sizing
+      // is a plan rather than a weighting. Omitted entirely when there is too
+      // little budget history for a rate — a zero would read as "no money"
+      // rather than "not known".
+      ...(dependableSurplus !== null ? { investableSurplus: dependableSurplus } : {}),
       fxToDisplay: Object.fromEntries(
         [...new Set(holdings.map((h) => h.currency))].map((code) => [code, convert(1, code)]),
       ),
     }),
-    [holdings, displayCurrency, summary.totalValue, convert],
+    [holdings, displayCurrency, summary.totalValue, convert, dependableSurplus],
   );
 
   /**
