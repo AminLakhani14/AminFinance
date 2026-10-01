@@ -1,0 +1,6 @@
+# Single-page app: every route (/expenses, /portfolio, /asset/FFC...) is drawn
+# by the app from index.html. Without this, opening or reloading any page but
+# the home page asks Netlify for a file that does not exist and gets a 404.
+# Real files (/assets/*, /logo.svg) are served as usual — a 200 rewrite only
+# applies when no file exists at the path.
+/*    /index.html   200
