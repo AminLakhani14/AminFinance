@@ -20,6 +20,7 @@ import type {
   PriceStreamServerMessage,
   PriceSubscribeMessage,
 } from '@aminfinance/shared';
+import { backendUrl } from './backend';
 
 export interface LiveTick {
   symbol: string;
@@ -45,7 +46,7 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let resyncTimer: ReturnType<typeof setTimeout> | null = null;
 
 function streamUrl(): string {
-  const base = import.meta.env.VITE_API_URL;
+  const base = backendUrl;
   if (base) {
     return `${String(base).replace(/^http/, 'ws').replace(/\/$/, '')}/ws/prices`;
   }

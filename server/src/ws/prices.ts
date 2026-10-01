@@ -16,7 +16,12 @@ import type {
   PriceStatusMessage,
 } from '@aminfinance/shared';
 
-const BINANCE_WS = 'wss://stream.binance.com:9443/stream';
+/**
+ * Binance's market-data-only stream host. Same `/stream?streams=` interface as
+ * stream.binance.com, but it serves hosted servers that the main host refuses
+ * (see the host note in `providers/binance.ts`).
+ */
+const BINANCE_WS = 'wss://data-stream.binance.vision/stream';
 
 /** Client sockets and the symbols each one wants. */
 const clients = new Map<WebSocket, Set<string>>();

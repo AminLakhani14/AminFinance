@@ -19,13 +19,42 @@ import type {
   BinanceTrade,
   MarketRow,
 } from '@aminfinance/shared';
-import { httpGetJson, httpGet } from '../lib/http.js';
+import { httpGetJson, httpGet, type FetchOptions } from '../lib/http.js';
 import { AppError } from '../lib/errors.js';
 import { acquire, retryAfterSeconds } from '../lib/rateLimit.js';
 import { config } from '../config.js';
 
-const BASE = 'https://api.binance.com';
 const PROVIDER = 'Binance';
+
+/**
+ * Two hosts, split by what each will serve.
+ *
+ * Public market data — prices, candles, the market list — goes to
+ * data-api.binance.vision, Binance's market-data-only host. api.binance.com
+ * refuses many hosted servers outright: Render's shared outbound addresses get
+ * HTTP 418, an IP ban earned by other tenants, while the data host serves the
+ * same responses to them. If the data host is itself unreachable, the main
+ * host is tried before giving up.
+ *
+ * Signed account calls exist only on api.binance.com, so they stay there.
+ */
+const API_BASE = 'https://api.binance.com';
+const DATA_BASE = 'https://data-api.binance.vision';
+
+/** A host that will not serve us at all, rather than a bad request it answered. */
+const HOST_REFUSED = /HTTP (403|418|451|5\d\d)\b|Network error/;
+
+async function publicGetJson<T>(path: string, options: FetchOptions): Promise<T> {
+  try {
+    return await httpGetJson<T>(`${DATA_BASE}${path}`, options);
+  } catch (err) {
+    const refused =
+      err instanceof AppError &&
+      (err.code === 'upstream_timeout' || (err.code === 'provider_error' && HOST_REFUSED.test(err.message)));
+    if (!refused) throw err;
+    return httpGetJson<T>(`${API_BASE}${path}`, options);
+  }
+}
 
 async function gate(bucket: 'binance' | 'binanceSigned'): Promise<void> {
   try {
@@ -54,7 +83,7 @@ async function syncClock(): Promise<void> {
   if (Date.now() - lastSyncedAt < 5 * 60_000) return;
   try {
     const before = Date.now();
-    const { serverTime } = await httpGetJson<{ serverTime: number }>(`${BASE}/api/v3/time`, {
+    const { serverTime } = await publicGetJson<{ serverTime: number }>(`/api/v3/time`, {
       provider: PROVIDER,
       timeoutMs: 5_000,
       retries: 1,
@@ -99,8 +128,8 @@ export async function getQuote(rawSymbol: string): Promise<Quote> {
   const symbol = normalizeSymbol(rawSymbol);
   await gate('binance');
 
-  const t = await httpGetJson<Ticker24h>(
-    `${BASE}/api/v3/ticker/24hr?symbol=${encodeURIComponent(symbol)}`,
+  const t = await publicGetJson<Ticker24h>(
+    `/api/v3/ticker/24hr?symbol=${encodeURIComponent(symbol)}`,
     { provider: PROVIDER },
   );
 
@@ -132,7 +161,7 @@ export async function getQuotes(symbols: string[]): Promise<Quote[]> {
   await gate('binance');
 
   const param = encodeURIComponent(JSON.stringify(normalized));
-  const tickers = await httpGetJson<Ticker24h[]>(`${BASE}/api/v3/ticker/24hr?symbols=${param}`, {
+  const tickers = await publicGetJson<Ticker24h[]>(`/api/v3/ticker/24hr?symbols=${param}`, {
     provider: PROVIDER,
   });
 
@@ -170,8 +199,8 @@ export async function getCandles(
   const symbol = normalizeSymbol(rawSymbol);
   await gate('binance');
 
-  const rows = await httpGetJson<Array<[number, string, string, string, string, string, ...unknown[]]>>(
-    `${BASE}/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${BINANCE_INTERVAL[interval]}&limit=${Math.min(limit, 1000)}`,
+  const rows = await publicGetJson<Array<[number, string, string, string, string, string, ...unknown[]]>>(
+    `/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${BINANCE_INTERVAL[interval]}&limit=${Math.min(limit, 1000)}`,
     { provider: PROVIDER },
   );
 
@@ -213,7 +242,7 @@ async function signedGet<T>(path: string, params: Record<string, string | number
   const signature = createHmac('sha256', secret).update(query.toString()).digest('hex');
   query.append('signature', signature);
 
-  const res = await httpGet(`${BASE}${path}?${query.toString()}`, {
+  const res = await httpGet(`${API_BASE}${path}?${query.toString()}`, {
     provider: PROVIDER,
     headers: { 'X-MBX-APIKEY': key },
     // Never retry a signed request blindly — the timestamp would be stale and
@@ -316,8 +345,8 @@ let exchangeSymbols: Set<string> | null = null;
 export async function getTradablePairs(): Promise<Set<string>> {
   if (exchangeSymbols) return exchangeSymbols;
   await gate('binance');
-  const info = await httpGetJson<{ symbols: Array<{ symbol: string; status: string }> }>(
-    `${BASE}/api/v3/exchangeInfo?permissions=SPOT`,
+  const info = await publicGetJson<{ symbols: Array<{ symbol: string; status: string }> }>(
+    `/api/v3/exchangeInfo?permissions=SPOT`,
     { provider: PROVIDER, timeoutMs: 20_000 },
   );
   exchangeSymbols = new Set(
@@ -383,7 +412,7 @@ export async function resolvePair(asset: string): Promise<string | null> {
 export async function getMarketTickers(quoteAsset = 'USDT'): Promise<MarketRow[]> {
   await gate('binance');
 
-  const tickers = await httpGetJson<Ticker24h[]>(`${BASE}/api/v3/ticker/24hr`, {
+  const tickers = await publicGetJson<Ticker24h[]>(`/api/v3/ticker/24hr`, {
     provider: PROVIDER,
     timeoutMs: 20_000,
   });

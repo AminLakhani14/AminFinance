@@ -100,8 +100,12 @@ export function BudgetHistory({
           </span>
         }
         description={`Every amount in ${formatMonth(month)}, by the day the money moved.`}
-        action={
-          <div role="radiogroup" aria-label="Show" className="inline-flex rounded-xl border border-border bg-surface p-1">
+      />
+      <CardBody className="space-y-4 px-0 py-0">
+        {/* In the body rather than the header's action slot: three labelled
+            tabs need the width, and beside the title they crush it on a phone. */}
+        <div className="px-5 pt-4">
+          <div role="radiogroup" aria-label="Show" className="inline-flex max-w-full flex-wrap rounded-xl border border-border bg-surface p-1">
             {VIEWS.map((v) => (
               <button
                 key={v.id}
@@ -117,10 +121,9 @@ export function BudgetHistory({
               </button>
             ))}
           </div>
-        }
-      />
-      <CardBody className="space-y-4 px-0 py-0">
-        <div className="grid grid-cols-3 gap-4 border-b border-border px-5 py-4">
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 border-b border-border px-5 pb-4 sm:grid-cols-3 sm:gap-4">
           <StatTile
             label="Credit — money in"
             value={signed(history.credit)}

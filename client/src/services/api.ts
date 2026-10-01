@@ -16,13 +16,13 @@ import type {
 } from '@reduxjs/toolkit/query';
 import { AUTH_HEADER, CACHE_HEADERS, type ApiError } from '@aminfinance/shared';
 import type { HealthResponse } from './types';
+import { backendUrl } from './backend';
 
 /**
- * Empty in dev — Vite proxies /api to the server, so the browser sees one
- * origin and never issues a preflight. Set VITE_API_URL only when the server
- * is deployed somewhere else.
+ * Defaults to the deployed backend. Set VITE_API_URL to override the origin,
+ * or leave it blank to use the local Vite proxy.
  */
-const baseUrl = import.meta.env.VITE_API_URL ?? '';
+const baseUrl = backendUrl;
 
 /** Freshness metadata parsed from the server's cache headers. */
 export interface CacheMeta {
@@ -76,7 +76,7 @@ const baseQuery: BaseQueryFn<
       const fallback: ApiError = {
         error: {
           code: 'internal',
-          message: 'Cannot reach the AminFinance server. Is it running on port 3001?',
+          message: 'Cannot reach the AminFinance server. Please try again shortly.',
         },
       };
       return { error: { status: 503, data: fallback } };
