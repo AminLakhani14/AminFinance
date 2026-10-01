@@ -23,16 +23,28 @@
  * freshness labels stay honest.
  */
 import WebSocket from 'ws';
-import type { Candle, CandleInterval, MarketRow, Quote } from '@aminfinance/shared';
+import type { AssetClass, Candle, CandleInterval, MarketRow, Quote } from '@aminfinance/shared';
 import { httpGet } from '../lib/http.js';
 import { AppError } from '../lib/errors.js';
 import { acquire, retryAfterSeconds } from '../lib/rateLimit.js';
 
 const PROVIDER = 'TradingView';
-const SCAN_URL = 'https://scanner.tradingview.com/pakistan/scan';
 const SOCKET_URL = 'wss://data.tradingview.com/socket.io/websocket?type=chart';
-const EXCHANGE = 'PSX';
-const CURRENCY = 'PKR';
+
+/**
+ * Where a symbol trades, in TradingView's naming.
+ *
+ * PSX is this provider's main job. Binance is the fallback for crypto when
+ * Binance itself refuses the server's address — hosted servers on shared IPs
+ * get HTTP 418 from every Binance host, while TradingView serves Binance's own
+ * pairs (`BINANCE:BTCUSDT`) from the same feed, in real time.
+ */
+export type Venue = 'PSX' | 'BINANCE';
+
+const VENUES: Record<Venue, { scanUrl: string; assetClass: AssetClass; currency: string }> = {
+  PSX: { scanUrl: 'https://scanner.tradingview.com/pakistan/scan', assetClass: 'stock', currency: 'PKR' },
+  BINANCE: { scanUrl: 'https://scanner.tradingview.com/crypto/scan', assetClass: 'crypto', currency: 'USDT' },
+};
 
 /** Chart sessions per connection. Comfortably under what the site itself opens. */
 const SESSIONS_PER_SOCKET = 40;
@@ -67,9 +79,9 @@ interface ScanRow {
 }
 
 /** One scanner POST. Rows that do not have the expected shape are dropped. */
-async function scan(body: Record<string, unknown>): Promise<ScanRow[]> {
+async function scan(body: Record<string, unknown>, venue: Venue = 'PSX'): Promise<ScanRow[]> {
   await gate();
-  const res = await httpGet(SCAN_URL, {
+  const res = await httpGet(VENUES[venue].scanUrl, {
     provider: PROVIDER,
     method: 'POST',
     body: JSON.stringify(body),
@@ -119,16 +131,17 @@ const QUOTE_COLUMNS = [
   'low',
   'volume',
   'update_mode',
+  'currency',
 ] as const;
 const quoteCol = reader(QUOTE_COLUMNS);
 
-function toQuote(row: ScanRow): Quote | null {
+function toQuote(row: ScanRow, venue: Venue): Quote | null {
   const price = num(quoteCol(row, 'close'));
   if (price === null || price <= 0) return null;
   const change = num(quoteCol(row, 'change_abs')) ?? 0;
   return {
     symbol: tickerOf(row),
-    assetClass: 'stock',
+    assetClass: VENUES[venue].assetClass,
     price,
     change,
     changePercent: num(quoteCol(row, 'change')) ?? 0,
@@ -137,34 +150,39 @@ function toQuote(row: ScanRow): Quote | null {
     dayOpen: num(quoteCol(row, 'open')),
     previousClose: price - change,
     volume: num(quoteCol(row, 'volume')),
-    currency: CURRENCY,
+    currency: str(quoteCol(row, 'currency')) ?? VENUES[venue].currency,
     timestamp: Date.now() - delaySeconds(quoteCol(row, 'update_mode')) * 1000,
   };
 }
 
 /**
- * Quotes for many PSX symbols in one request.
+ * Quotes for many symbols on one venue in one request.
  *
  * Symbols the scanner does not know come back in `missing` rather than
  * failing the batch — one delisted ticker must not blank the whole book.
  */
-export async function getQuotes(symbols: string[]): Promise<{ quotes: Quote[]; missing: string[] }> {
+export async function getQuotes(
+  symbols: string[],
+  venue: Venue = 'PSX',
+): Promise<{ quotes: Quote[]; missing: string[] }> {
   const wanted = [...new Set(symbols.map((s) => s.trim().toUpperCase()).filter(Boolean))];
   if (wanted.length === 0) return { quotes: [], missing: [] };
 
-  const rows = await scan({
-    symbols: { tickers: wanted.map((s) => `${EXCHANGE}:${s}`) },
-    columns: QUOTE_COLUMNS,
-  });
-  const quotes = rows.map(toQuote).filter((q): q is Quote => q !== null);
+  const rows = await scan(
+    { symbols: { tickers: wanted.map((s) => `${venue}:${s}`) }, columns: QUOTE_COLUMNS },
+    venue,
+  );
+  const quotes = rows.map((row) => toQuote(row, venue)).filter((q): q is Quote => q !== null);
   const found = new Set(quotes.map((q) => q.symbol));
   return { quotes, missing: wanted.filter((s) => !found.has(s)) };
 }
 
-export async function getQuote(symbol: string): Promise<Quote> {
-  const { quotes } = await getQuotes([symbol]);
+export async function getQuote(symbol: string, venue: Venue = 'PSX'): Promise<Quote> {
+  const { quotes } = await getQuotes([symbol], venue);
   const quote = quotes[0];
-  if (!quote) throw AppError.notFound(`No PSX quote for "${symbol.toUpperCase()}". Check the ticker.`);
+  if (!quote) {
+    throw AppError.notFound(`No ${venue === 'PSX' ? 'PSX' : 'Binance'} quote for "${symbol.toUpperCase()}". Check the ticker.`);
+  }
   return quote;
 }
 
@@ -181,7 +199,7 @@ const listingCol = reader(LISTING_COLUMNS);
 export async function getMarketListing(): Promise<MarketRow[]> {
   const rows = await scan({
     filter: [
-      { left: 'exchange', operation: 'equal', right: EXCHANGE },
+      { left: 'exchange', operation: 'equal', right: 'PSX' },
       { left: 'type', operation: 'in_range', right: ['stock', 'dr', 'fund'] },
     ],
     columns: LISTING_COLUMNS,
@@ -200,7 +218,7 @@ export async function getMarketListing(): Promise<MarketRow[]> {
       change: num(listingCol(row, 'change_abs')) ?? 0,
       changePercent: num(listingCol(row, 'change')) ?? 0,
       volume: num(listingCol(row, 'volume')),
-      currency: CURRENCY,
+      currency: VENUES.PSX.currency,
       name: str(listingCol(row, 'description')),
       sector: str(listingCol(row, 'sector')),
       // Index membership was a market-watch column; the scanner has no equivalent.
@@ -212,6 +230,70 @@ export async function getMarketListing(): Promise<MarketRow[]> {
     throw AppError.providerError(PROVIDER, 'The PSX listing came back empty.');
   }
   return listing;
+}
+
+const CRYPTO_LISTING_COLUMNS = ['name', 'close', 'change', 'change_abs', 'volume'] as const;
+const cryptoCol = reader(CRYPTO_LISTING_COLUMNS);
+
+/**
+ * Binance spot pairs quoted in `quoteAsset`, most-traded first — the same
+ * rows `binance.getMarketTickers` returns, for when Binance refuses us.
+ *
+ * `volume` is reported as the quote-currency amount traded, as Binance's
+ * `quoteVolume` is: the scanner gives base volume, so it is multiplied by
+ * price here. (Its own traded-value column comes back empty for crypto.)
+ */
+export async function getCryptoListing(quoteAsset = 'USDT'): Promise<MarketRow[]> {
+  const quote = quoteAsset.toUpperCase();
+  const rows = await scan(
+    {
+      filter: [
+        { left: 'exchange', operation: 'equal', right: 'BINANCE' },
+        { left: 'currency', operation: 'equal', right: quote },
+        { left: 'type', operation: 'equal', right: 'spot' },
+      ],
+      columns: CRYPTO_LISTING_COLUMNS,
+      range: [0, 2000],
+    },
+    'BINANCE',
+  );
+
+  const listing: MarketRow[] = [];
+  for (const row of rows) {
+    const price = num(cryptoCol(row, 'close'));
+    if (price === null || price <= 0) continue;
+    const baseVolume = num(cryptoCol(row, 'volume'));
+    listing.push({
+      symbol: str(cryptoCol(row, 'name'))?.toUpperCase() ?? tickerOf(row),
+      assetClass: 'crypto',
+      price,
+      change: num(cryptoCol(row, 'change_abs')) ?? 0,
+      changePercent: num(cryptoCol(row, 'change')) ?? 0,
+      volume: baseVolume !== null ? baseVolume * price : null,
+      currency: quote,
+    });
+  }
+
+  if (listing.length === 0) {
+    throw AppError.providerError(PROVIDER, `The Binance ${quote} listing came back empty.`);
+  }
+  return listing.sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0));
+}
+
+/** Every Binance spot pair, for mapping a held coin to a priceable pair. */
+export async function getCryptoPairs(): Promise<Set<string>> {
+  const rows = await scan(
+    {
+      filter: [
+        { left: 'exchange', operation: 'equal', right: 'BINANCE' },
+        { left: 'type', operation: 'equal', right: 'spot' },
+      ],
+      columns: ['name'],
+      range: [0, 5000],
+    },
+    'BINANCE',
+  );
+  return new Set(rows.map((row) => (typeof row.d[0] === 'string' ? row.d[0].toUpperCase() : tickerOf(row))));
 }
 
 const DIVIDEND_COLUMNS = [
@@ -242,7 +324,7 @@ function isoDate(epochSeconds: number | null): string | null {
  */
 export async function getDividendSnapshot(symbol: string): Promise<DividendSnapshot> {
   const rows = await scan({
-    symbols: { tickers: [`${EXCHANGE}:${symbol.toUpperCase()}`] },
+    symbols: { tickers: [`PSX:${symbol.toUpperCase()}`] },
     columns: DIVIDEND_COLUMNS,
   });
   const row = rows[0];
@@ -298,7 +380,7 @@ export async function getProfiles(symbols: string[]): Promise<Record<string, Iss
   if (wanted.length === 0) return {};
 
   const rows = await scan({
-    symbols: { tickers: wanted.map((s) => `${EXCHANGE}:${s}`) },
+    symbols: { tickers: wanted.map((s) => `PSX:${s}`) },
     columns: PROFILE_COLUMNS,
   });
 
@@ -361,8 +443,10 @@ async function candlesOverSocket(
   symbols: string[],
   interval: CandleInterval,
   limit: number,
+  venue: Venue,
 ): Promise<Map<string, Candle[] | Error>> {
   await gate();
+  const market = venue === 'PSX' ? 'PSX' : 'Binance';
 
   return new Promise((resolve) => {
     const sessions = new Map<string, { symbol: string; bars: Candle[]; done: boolean; error?: Error }>();
@@ -384,7 +468,7 @@ async function candlesOverSocket(
       for (const s of sessions.values()) {
         if (s.error) out.set(s.symbol, s.error);
         else if (s.done && s.bars.length > 0) out.set(s.symbol, s.bars.slice(-limit));
-        else if (s.done) out.set(s.symbol, AppError.notFound(`No PSX history for "${s.symbol}".`));
+        else if (s.done) out.set(s.symbol, AppError.notFound(`No ${market} history for "${s.symbol}".`));
         else {
           out.set(
             s.symbol,
@@ -408,7 +492,7 @@ async function candlesOverSocket(
           message('resolve_symbol', [
             cs,
             'sym',
-            '=' + JSON.stringify({ symbol: `${EXCHANGE}:${s.symbol}`, adjustment: 'splits', session: 'regular' }),
+            '=' + JSON.stringify({ symbol: `${venue}:${s.symbol}`, adjustment: 'splits', session: 'regular' }),
           ]),
         );
         ws.send(message('create_series', [cs, 's1', 's1', 'sym', RESOLUTION[interval], limit, '']));
@@ -445,7 +529,7 @@ async function candlesOverSocket(
           session.done = true;
         } else if (msg.m === 'symbol_error' || msg.m === 'series_error') {
           session.done = true;
-          session.error = AppError.notFound(`PSX has no symbol "${session.symbol}". Check the ticker.`);
+          session.error = AppError.notFound(`${market} has no symbol "${session.symbol}". Check the ticker.`);
         }
 
         if ([...sessions.values()].every((s) => s.done)) finish();
@@ -469,6 +553,7 @@ export async function getCandlesBatch(
   symbols: string[],
   interval: CandleInterval,
   limit: number,
+  venue: Venue = 'PSX',
 ): Promise<Map<string, Candle[] | Error>> {
   const wanted = [...new Set(symbols.map((s) => s.trim().toUpperCase()).filter(Boolean))];
   const bars = Math.max(1, Math.min(limit, 2000));
@@ -477,12 +562,17 @@ export async function getCandlesBatch(
     chunks.push(wanted.slice(i, i + SESSIONS_PER_SOCKET));
   }
 
-  const results = await Promise.all(chunks.map((chunk) => candlesOverSocket(chunk, interval, bars)));
+  const results = await Promise.all(chunks.map((chunk) => candlesOverSocket(chunk, interval, bars, venue)));
   return new Map(results.flatMap((m) => [...m]));
 }
 
-export async function getCandles(symbol: string, interval: CandleInterval, limit: number): Promise<Candle[]> {
-  const result = (await getCandlesBatch([symbol], interval, limit)).get(symbol.trim().toUpperCase());
+export async function getCandles(
+  symbol: string,
+  interval: CandleInterval,
+  limit: number,
+  venue: Venue = 'PSX',
+): Promise<Candle[]> {
+  const result = (await getCandlesBatch([symbol], interval, limit, venue)).get(symbol.trim().toUpperCase());
   if (!result) throw AppError.providerError(PROVIDER, `No history returned for "${symbol}".`);
   if (result instanceof Error) throw result;
   return result;

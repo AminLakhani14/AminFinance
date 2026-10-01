@@ -23,6 +23,7 @@ import { httpGetJson, httpGet, type FetchOptions } from '../lib/http.js';
 import { AppError } from '../lib/errors.js';
 import { acquire, retryAfterSeconds } from '../lib/rateLimit.js';
 import { config } from '../config.js';
+import * as tradingview from './tradingview.js';
 
 const PROVIDER = 'Binance';
 
@@ -53,6 +54,36 @@ async function publicGetJson<T>(path: string, options: FetchOptions): Promise<T>
       (err.code === 'upstream_timeout' || (err.code === 'provider_error' && HOST_REFUSED.test(err.message)));
     if (!refused) throw err;
     return httpGetJson<T>(`${API_BASE}${path}`, options);
+  }
+}
+
+/**
+ * When Binance refuses this server outright — HTTP 418 (an IP ban), 451 (a
+ * restricted location) or 403 — on both hosts, public data comes from
+ * TradingView's feed of Binance's own pairs (`BINANCE:BTCUSDT`), which serves
+ * those same prices in real time. Hosted servers on shared addresses hit this:
+ * Render's are refused by every Binance host.
+ *
+ * Once refused, Binance is not asked again for half an hour: each call would
+ * only cost two more refusals before reaching the fallback anyway. Signed
+ * account calls have no fallback — they exist only on Binance.
+ */
+const REFUSAL = /HTTP (403|418|451)\b/;
+const REFUSAL_HOLD_MS = 30 * 60_000;
+let refusedUntil = 0;
+
+async function orTradingView<T>(
+  fromBinance: () => Promise<T>,
+  fromTradingView: () => Promise<T>,
+): Promise<T> {
+  if (Date.now() < refusedUntil) return fromTradingView();
+  try {
+    return await fromBinance();
+  } catch (err) {
+    const refused = err instanceof AppError && err.code === 'provider_error' && REFUSAL.test(err.message);
+    if (!refused) throw err;
+    refusedUntil = Date.now() + REFUSAL_HOLD_MS;
+    return fromTradingView();
   }
 }
 
@@ -124,7 +155,7 @@ function quoteCurrency(symbol: string): string {
   return 'USDT';
 }
 
-export async function getQuote(rawSymbol: string): Promise<Quote> {
+async function quoteFromBinance(rawSymbol: string): Promise<Quote> {
   const symbol = normalizeSymbol(rawSymbol);
   await gate('binance');
 
@@ -155,7 +186,7 @@ export async function getQuote(rawSymbol: string): Promise<Quote> {
 }
 
 /** Batch quotes — one call for many symbols beats N round trips. */
-export async function getQuotes(symbols: string[]): Promise<Quote[]> {
+async function quotesFromBinance(symbols: string[]): Promise<Quote[]> {
   if (symbols.length === 0) return [];
   const normalized = symbols.map(normalizeSymbol);
   await gate('binance');
@@ -191,7 +222,7 @@ const BINANCE_INTERVAL: Record<CandleInterval, string> = {
   '1w': '1w',
 };
 
-export async function getCandles(
+async function candlesFromBinance(
   rawSymbol: string,
   interval: CandleInterval,
   limit = 500,
@@ -342,7 +373,7 @@ export async function getTrades(rawSymbol: string, limit = 500): Promise<Binance
 /** Which pairs actually trade — used to map a held asset to a priceable pair. */
 let exchangeSymbols: Set<string> | null = null;
 
-export async function getTradablePairs(): Promise<Set<string>> {
+async function pairsFromBinance(): Promise<Set<string>> {
   if (exchangeSymbols) return exchangeSymbols;
   await gate('binance');
   const info = await publicGetJson<{ symbols: Array<{ symbol: string; status: string }> }>(
@@ -409,7 +440,7 @@ export async function resolvePair(asset: string): Promise<string | null> {
  * cross (BTCETH, ETHBNB, …), which is noise for someone browsing what to buy,
  * and the same coin appears a dozen times priced in different assets.
  */
-export async function getMarketTickers(quoteAsset = 'USDT'): Promise<MarketRow[]> {
+async function tickersFromBinance(quoteAsset = 'USDT'): Promise<MarketRow[]> {
   await gate('binance');
 
   const tickers = await publicGetJson<Ticker24h[]>(`/api/v3/ticker/24hr`, {
@@ -441,4 +472,54 @@ export async function getMarketTickers(quoteAsset = 'USDT'): Promise<MarketRow[]
   }
 
   return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Public market data, with the TradingView fallback
+// ---------------------------------------------------------------------------
+
+export async function getQuote(rawSymbol: string): Promise<Quote> {
+  return orTradingView(
+    () => quoteFromBinance(rawSymbol),
+    () => tradingview.getQuote(normalizeSymbol(rawSymbol), 'BINANCE'),
+  );
+}
+
+/** Batch quotes — one call for many symbols beats N round trips. */
+export async function getQuotes(symbols: string[]): Promise<Quote[]> {
+  return orTradingView(
+    () => quotesFromBinance(symbols),
+    async () => (await tradingview.getQuotes(symbols.map(normalizeSymbol), 'BINANCE')).quotes,
+  );
+}
+
+export async function getCandles(
+  rawSymbol: string,
+  interval: CandleInterval,
+  limit = 500,
+): Promise<CandleSeries> {
+  return orTradingView(
+    () => candlesFromBinance(rawSymbol, interval, limit),
+    async () => {
+      const symbol = normalizeSymbol(rawSymbol);
+      const candles = await tradingview.getCandles(symbol, interval, Math.min(limit, 1000), 'BINANCE');
+      return { symbol, assetClass: 'crypto' as const, interval, candles };
+    },
+  );
+}
+
+/** Which pairs actually trade — used to map a held asset to a priceable pair. */
+export async function getTradablePairs(): Promise<Set<string>> {
+  return orTradingView(
+    () => pairsFromBinance(),
+    async () => (exchangeSymbols ??= await tradingview.getCryptoPairs()),
+  );
+}
+
+/** Every pair quoted in `quoteAsset`, with its 24h figures. See `tickersFromBinance`. */
+export async function getMarketTickers(quoteAsset = 'USDT'): Promise<MarketRow[]> {
+  return orTradingView(
+    () => tickersFromBinance(quoteAsset),
+    () => tradingview.getCryptoListing(quoteAsset),
+  );
 }
