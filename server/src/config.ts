@@ -18,7 +18,12 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().int().positive().default(3001),
   HOST: z.string().default('127.0.0.1'),
-  CORS_ORIGIN: z.string().default('http://localhost:5173'),
+  /**
+   * Browser origins allowed to call this server, comma-separated: the local
+   * dev client and the deployed Netlify site. Set CORS_ORIGIN to replace the
+   * list — for a different frontend address, for instance.
+   */
+  CORS_ORIGIN: z.string().default('http://localhost:5173,https://aminfinance.netlify.app'),
   AUTH_SECRET: z.string().default(''),
 
   FINNHUB_API_KEY: z.string().default(''),
