@@ -55,6 +55,32 @@ const envSchema = z.object({
    * reject it.
    */
   AI_REASONING_EFFORT: z.enum(['none', 'low', 'medium', 'high', '']).default('none'),
+  /**
+   * AI calls allowed to start together. The AI page asks for three rankings
+   * at once (stocks, coins, metals), so a limit of one turned two of them into
+   * "rate limit reached" errors. Three suits an endpoint that runs requests in
+   * parallel, as hosted APIs and most gateways do; set 1 for a local model
+   * that can only serve one request at a time.
+   */
+  AI_MAX_PARALLEL: z.coerce.number().int().min(1).max(10).default(3),
+
+  /**
+   * Fallback AI: Google Gemini, through its OpenAI-compatible endpoint. Used
+   * when the OPENAI_* endpoint above is unset, unreachable or failing — on a
+   * hosted server that one often points at a gateway on someone's own PC,
+   * which the host cannot reach at all.
+   *
+   * Comma-separated keys, used in order: when one runs out of quota or is
+   * rejected, the next takes over.
+   */
+  GEMINI_API_KEYS: z.string().default(''),
+  /**
+   * Models to try, in order. A list rather than one name because Gemini
+   * models come and go — older ones are withdrawn for new keys, and a busy one
+   * answers 503 at peak times — so the next is tried when one is unavailable.
+   * The `-latest` aliases follow Google's newest release of each tier.
+   */
+  GEMINI_MODELS: z.string().default('gemini-flash-latest,gemini-3.5-flash,gemini-flash-lite-latest'),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -108,11 +134,18 @@ export const providers = {
   /** Public Binance endpoints need no key; this gates the signed ones only. */
   binanceAccount: Boolean(env.BINANCE_API_KEY && env.BINANCE_API_SECRET),
   /**
-   * No API key requirement: a local Ollama server accepts any bearer token (or
-   * none), so demanding one here would disable a working setup.
+   * No API key requirement for the main endpoint: a local Ollama server
+   * accepts any bearer token (or none), so demanding one here would disable a
+   * working setup. Either the main endpoint or the Gemini fallback is enough.
    */
-  ai: Boolean(env.OPENAI_BASE_URL && env.OPENAI_MODEL),
+  ai: Boolean((env.OPENAI_BASE_URL && env.OPENAI_MODEL) || env.GEMINI_API_KEYS.trim()),
 } as const;
+
+const splitList = (value: string): string[] =>
+  value
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
 
 export type ProviderName = keyof typeof providers;
 
@@ -145,6 +178,14 @@ export const config = {
     timeoutMs: env.AI_TIMEOUT_MS,
     maxTokens: env.AI_MAX_TOKENS,
     reasoningEffort: env.AI_REASONING_EFFORT,
+    maxParallel: env.AI_MAX_PARALLEL,
+    /** Whether the main OPENAI_* endpoint is set at all. */
+    primaryConfigured: Boolean(env.OPENAI_BASE_URL && env.OPENAI_MODEL),
+    gemini: {
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      keys: splitList(env.GEMINI_API_KEYS),
+      models: splitList(env.GEMINI_MODELS),
+    },
   },
   providers,
 } as const;
@@ -168,9 +209,20 @@ export function describeCapabilities(): string {
       'SBP_API_KEY for weekly reserves',
     ],
     [
-      `AI insights${providers.ai ? ` (${config.ai.model})` : ''}`,
+      `AI insights${
+        providers.ai
+          ? ` (${[
+              config.ai.primaryConfigured ? config.ai.model : null,
+              config.ai.gemini.keys.length > 0
+                ? `Gemini fallback, ${config.ai.gemini.keys.length} key${config.ai.gemini.keys.length === 1 ? '' : 's'}`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(' + ')})`
+          : ''
+      }`,
       providers.ai,
-      'OPENAI_BASE_URL + OPENAI_MODEL',
+      'OPENAI_BASE_URL + OPENAI_MODEL, or GEMINI_API_KEYS',
     ],
   ];
 

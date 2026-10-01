@@ -6,6 +6,7 @@
  * the whole app down. Every provider gets a conservative budget, and requests
  * queue rather than fail when it is exhausted.
  */
+import { config } from '../config.js';
 
 interface Bucket {
   capacity: number;
@@ -49,10 +50,13 @@ const BUDGETS: Record<string, { capacity: number; perSecond: number }> = {
   // token covers a whole batch (a scan or a socket of up to 40 histories),
   // not one symbol.
   tradingview: { capacity: 10, perSecond: 2 },
-  // A local model serves one request at a time and takes minutes per answer.
-  // Capacity 1 keeps a second insight from queueing behind the first and
-  // timing out; the queue wait in `acquire` rejects fast rather than piling on.
-  ai: { capacity: 1, perSecond: 0.05 },
+  // Long calls: an answer takes from seconds to minutes. Capacity is how many
+  // may start together (`AI_MAX_PARALLEL`) — enough for the AI page's three
+  // rankings at once — and the slow refill keeps a burst from becoming a
+  // stream. A local model that serves one request at a time should run with
+  // AI_MAX_PARALLEL=1, so a second call is refused rather than queueing
+  // behind the first until it times out.
+  ai: { capacity: config.ai.maxParallel, perSecond: 0.05 * config.ai.maxParallel },
 };
 
 function getBucket(provider: string): Bucket {

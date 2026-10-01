@@ -30,7 +30,7 @@ import { zoneStatusOf } from '@aminfinance/shared';
 import { config } from '../config.js';
 import { get as cacheGet, set as cacheSet, TTL } from '../lib/cache.js';
 import { priceText, type RulePlan, type TradeInput } from '../lib/tradeRules.js';
-import { ASSET_DESCRIPTION, SYSTEM_PROMPT, complete, formatTechnicals } from './ai.js';
+import { ASSET_DESCRIPTION, SYSTEM_PROMPT, completeWithModel, formatTechnicals } from './ai.js';
 
 const SIGNALS = ['buy-now', 'buy-on-dip', 'avoid', 'add', 'hold', 'take-profit', 'sell'] as const;
 const HOLD_PERIODS = ['long-term', 'medium-term', 'short-term'] as const;
@@ -171,13 +171,13 @@ async function reviewTrade(asset: TradeInput, rule: RulePlan, pulse: MarketPulse
     formatPulse(pulse),
   ].join('\n');
 
-  const parsed = await complete(
+  const { data: parsed, model } = await completeWithModel(
     SYSTEM_PROMPT,
     userContent,
     { name: 'trade_review', schema: REVIEW_SCHEMA, output: REVIEW_OUTPUT },
     { gate: false, maxTokens: REVIEW_MAX_TOKENS, timeoutMs: REVIEW_TIMEOUT_MS },
   );
-  return { ...parsed, model: config.ai.model, generatedAt: Date.now() };
+  return { ...parsed, model, generatedAt: Date.now() };
 }
 
 // ---------------------------------------------------------------------------

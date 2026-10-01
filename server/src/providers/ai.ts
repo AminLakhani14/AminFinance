@@ -144,7 +144,26 @@ async function readStream(stream: ReadableStream<Uint8Array>): Promise<StreamRes
 }
 
 /**
- * One chat-completions call returning parsed JSON matching `spec`.
+ * One chat-completions call returning parsed JSON matching `spec`, from the
+ * first AI that can answer it.
+ *
+ * Two kinds of endpoint, tried in order:
+ *
+ *  1. The main one, `OPENAI_BASE_URL` — whatever the user runs: a local
+ *     gateway, Ollama, or a hosted API.
+ *  2. Google Gemini, through its OpenAI-compatible endpoint, as a fallback —
+ *     each model in `GEMINI_MODELS` in turn, and for each model each key in
+ *     `GEMINI_API_KEYS` until one answers.
+ *
+ * The fallback exists because the main endpoint is often out of reach: on a
+ * hosted server it usually points at a gateway on the user's own PC, which
+ * the host can never connect to. Rather than every AI feature failing there,
+ * the call moves on.
+ *
+ * Whatever fails is benched for a while so the next call does not wait on it
+ * again: the main endpoint for five minutes once it proves unreachable, a
+ * Gemini key until its quota window resets, a Gemini model for a minute while
+ * Google reports it overloaded (or for hours once it is withdrawn).
  *
  * Not routed through `lib/http.ts`: that helper retries and defaults to a 12s
  * timeout, both wrong for a call that legitimately runs for minutes and must
@@ -155,26 +174,20 @@ async function readStream(stream: ReadableStream<Uint8Array>): Promise<StreamRes
  * model generating at ~1 token/second dies at five minutes regardless of
  * AI_TIMEOUT_MS. Streaming makes the server send headers immediately and then
  * a token at a time, so neither undici timeout is ever idle long enough to
- * fire and our own AbortController stays the real deadline.
- *
- * Not every endpoint supports it, though — some local gateways reject
- * `stream: true` outright with a 400. Rather than making the whole AI surface
- * unusable behind such a gateway, that specific rejection is retried
- * unstreamed and the answer remembered for the process lifetime, so the cost
- * is one wasted request rather than one per call. The undici ceiling still
- * applies on that path, which is a real limit on very slow models but a far
- * better outcome than every AI feature returning an error.
+ * fire and our own AbortController stays the real deadline. An endpoint that
+ * rejects `stream: true` with a 400 is retried unstreamed and remembered, so
+ * the cost is one wasted request per process rather than one per call.
  */
 
 /**
- * Whether the configured endpoint accepts `stream: true`.
+ * Whether each endpoint accepts `stream: true`, keyed by base URL.
  *
- * `null` until proven otherwise. Set to false only on an explicit 400 naming
+ * Absent until proven otherwise. Set to false only on an explicit 400 naming
  * streaming, never on a timeout or a network error — those say nothing about
  * whether streaming is supported and would permanently downgrade the transport
  * on a transient blip.
  */
-let streamingSupported: boolean | null = null;
+const streamingSupport = new Map<string, boolean>();
 
 /** Does this 400 body indicate the endpoint refuses streamed responses? */
 function isStreamingUnsupported(status: number, detail: string): boolean {
@@ -182,6 +195,7 @@ function isStreamingUnsupported(status: number, detail: string): boolean {
   const text = detail.toLowerCase();
   return text.includes('stream') && /not support|unsupported|not implemented|disabled/.test(text);
 }
+
 /**
  * Per-call overrides for `complete`.
  *
@@ -192,109 +206,143 @@ function isStreamingUnsupported(status: number, detail: string): boolean {
  * minutes.
  */
 export interface CompleteOptions {
-  /** Take a token from the shared one-at-a-time AI bucket. Default true. */
+  /** Take a token from the shared AI bucket. Default true. */
   gate?: boolean;
   maxTokens?: number;
   timeoutMs?: number;
 }
 
-export async function complete<T>(
-  system: string,
-  user: string,
-  spec: JsonSchemaSpec<T>,
-  options: CompleteOptions = {},
-): Promise<T> {
-  requireConfigured();
-  if (options.gate !== false) await gate();
-  const maxTokens = options.maxTokens ?? config.ai.maxTokens;
-  const timeoutMs = options.timeoutMs ?? config.ai.timeoutMs;
+/** One endpoint + model + key to try. */
+interface Target {
+  /** How the target is named in errors: `claude`, `gemini-3.5-flash (key 2)`. */
+  label: string;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  gemini: boolean;
+}
 
-  const body: Record<string, unknown> = {
-    model: config.ai.model,
-    max_tokens: maxTokens,
-    // Deterministic-ish: this is analysis, not creative writing, and low
-    // variance also keeps the JSON well-formed more often.
-    temperature: 0.3,
-    messages: [
-      { role: 'system', content: system },
-      // The JSON contract is restated in the prompt because `response_format`
-      // is advisory: a gateway that drops the parameter leaves the model free
-      // to invent its own field names (`rankings` instead of `opportunities`),
-      // which then fails validation and wastes the whole call. Saying it in
-      // the prompt as well costs a few hundred tokens and makes the shape
-      // survive an endpoint that ignores the parameter entirely.
-      {
-        role: 'user',
-        content:
-          `Reply with JSON only — no prose, no markdown fence — matching this schema exactly. ` +
-          `Use these exact top-level key names; do not rename or add keys.
-
-` +
-          JSON.stringify(spec.schema),
-      },
-      { role: 'user', content: user },
-    ],
-    response_format: {
-      type: 'json_schema',
-      json_schema: { name: spec.name, strict: true, schema: spec.schema },
-    },
-  };
-
-  if (config.ai.reasoningEffort) {
-    body.reasoning_effort = config.ai.reasoningEffort;
+/**
+ * Why a target could not answer. `status` is the HTTP status, 0 for a network
+ * failure, -1 for a timeout, and null when the transport worked but the reply
+ * was unusable (empty, truncated, not the requested JSON).
+ */
+class TargetFailure extends Error {
+  constructor(
+    message: string,
+    readonly status: number | null,
+    readonly detail = '',
+  ) {
+    super(message);
   }
+}
 
+// ---------------------------------------------------------------------------
+// Benching failed targets
+// ---------------------------------------------------------------------------
+
+const benched = new Map<string, { until: number; why: string }>();
+
+function bench(id: string, ms: number, why: string): void {
+  benched.set(id, { until: Date.now() + ms, why });
+}
+
+function isBenched(id: string): boolean {
+  const entry = benched.get(id);
+  return entry !== undefined && entry.until > Date.now();
+}
+
+const MINUTE = 60_000;
+/** Gemini attempts per call, across models and keys. */
+const MAX_GEMINI_ATTEMPTS = 8;
+/**
+ * A Gemini model under load sometimes holds a request open without
+ * answering. With more models to try, waiting out the whole call timeout on
+ * one of them is the wrong trade: give each attempt this long to start
+ * responding, and this long overall, then move on.
+ */
+const GEMINI_HEADERS_TIMEOUT_MS = 15_000;
+const GEMINI_ATTEMPT_TIMEOUT_MS = 45_000;
+
+/**
+ * How long a Gemini quota error benches its key.
+ *
+ * Google says how long to wait — `"retryDelay": "37s"` for a per-minute limit
+ * — and names the quota, so a daily one (`...PerDay`) benches the key for an
+ * hour rather than a minute: it will not come back sooner.
+ */
+function quotaBench(detail: string): number {
+  if (/per\s*day|PerDay/i.test(detail)) return 60 * MINUTE;
+  const delay = /"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/.exec(detail)?.[1];
+  return delay ? Math.max(Number(delay) * 1000, 10_000) : MINUTE;
+}
+
+// ---------------------------------------------------------------------------
+// One attempt
+// ---------------------------------------------------------------------------
+
+/** Minimal shape of an unstreamed chat completion. */
+interface ChatCompletion {
+  choices?: Array<{
+    message?: { content?: string; reasoning?: string; reasoning_content?: string };
+    finish_reason?: string;
+  }>;
+}
+
+/** One request to one target, streamed when the endpoint allows it. */
+async function callTarget(
+  target: Target,
+  body: Record<string, unknown>,
+  timeoutMs: number,
+  headersTimeoutMs?: number,
+): Promise<StreamResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // Cleared as soon as the response starts; only a silent endpoint trips it.
+  let waitingForHeaders = true;
+  const headersTimer =
+    headersTimeoutMs !== undefined
+      ? setTimeout(() => {
+          if (waitingForHeaders) controller.abort();
+        }, headersTimeoutMs)
+      : null;
 
-  /** One attempt at the given transport. Returns null to mean "retry unstreamed". */
   async function attempt(stream: boolean): Promise<StreamResult | null> {
-    const res = await fetch(`${config.ai.baseUrl}/chat/completions`, {
+    const res = await fetch(`${target.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         accept: stream ? 'text/event-stream' : 'application/json',
         // Harmless when the server ignores auth, as local Ollama does.
-        ...(config.ai.apiKey ? { authorization: `Bearer ${config.ai.apiKey}` } : {}),
+        ...(target.apiKey ? { authorization: `Bearer ${target.apiKey}` } : {}),
       },
       body: JSON.stringify({ ...body, stream }),
       signal: controller.signal,
     });
+    waitingForHeaders = false;
 
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
-      if (res.status === 404) {
-        throw AppError.providerError(
-          PROVIDER,
-          `Model "${config.ai.model}" was not found at ${config.ai.baseUrl}. Check OPENAI_MODEL.`,
-        );
-      }
-      // The endpoint refuses streaming. Remember it and let the caller retry.
       if (stream && isStreamingUnsupported(res.status, detail)) {
-        streamingSupported = false;
+        streamingSupport.set(target.baseUrl, false);
         return null;
       }
-      throw AppError.providerError(
-        PROVIDER,
-        `AI endpoint returned HTTP ${res.status}${detail ? `: ${detail.slice(0, 300)}` : ''}.`,
+      throw new TargetFailure(
+        res.status === 404
+          ? `model "${target.model}" was not found at ${target.baseUrl}`
+          : `HTTP ${res.status}${detail ? `: ${detail.replace(/\s+/g, ' ').slice(0, 200)}` : ''}`,
+        res.status,
+        detail,
       );
     }
 
     if (stream) {
-      if (!res.body) {
-        throw AppError.providerError(PROVIDER, 'AI endpoint returned an empty response stream.');
-      }
-      streamingSupported = true;
+      if (!res.body) throw new TargetFailure('an empty response stream', null);
+      streamingSupport.set(target.baseUrl, true);
       return readStream(res.body);
     }
 
-    // Unstreamed: one JSON body in the same shape the stream accumulates to.
-    const json = (await res.json()) as {
-      choices?: Array<{
-        message?: { content?: string; reasoning?: string; reasoning_content?: string };
-        finish_reason?: string;
-      }>;
-    };
+    const json = (await res.json()) as ChatCompletion;
     const choice = json.choices?.[0];
     return {
       content: choice?.message?.content ?? '',
@@ -305,66 +353,202 @@ export async function complete<T>(
     };
   }
 
-  let result: StreamResult;
   try {
-    const first = await attempt(streamingSupported !== false);
-    result = first ?? ((await attempt(false)) as StreamResult);
+    const first = await attempt(streamingSupport.get(target.baseUrl) !== false);
+    return first ?? ((await attempt(false)) as StreamResult);
   } catch (err) {
-    // Deliberate failures above already carry a good message.
-    if (err instanceof AppError) throw err;
-
+    if (err instanceof TargetFailure) throw err;
+    if (err instanceof AppError) throw new TargetFailure(err.message, null);
     if (err instanceof Error && err.name === 'AbortError') {
-      // Say what to do about it. Generation time scales with how many assets
-      // are in the call, so the usual cause is a large ranking rather than a
-      // dead endpoint, and the fix is fewer assets or a longer ceiling.
-      throw AppError.upstreamTimeout(
-        `${PROVIDER} (${config.ai.model}) after ${Math.round(timeoutMs / 1000)}s. ` +
-          `A ranking over many assets takes proportionally longer — rank fewer at once, ` +
-          `or raise AI_TIMEOUT_MS`,
+      throw new TargetFailure(
+        waitingForHeaders && headersTimeoutMs !== undefined
+          ? `no response within ${Math.round(headersTimeoutMs / 1000)}s`
+          : `no answer within ${Math.round(timeoutMs / 1000)}s`,
+        -1,
       );
     }
-    // Surface undici's cause code (UND_ERR_CONNECT_TIMEOUT, ECONNREFUSED,
-    // UND_ERR_HEADERS_TIMEOUT...). Without it every network failure looks
-    // identical, and "host asleep" is indistinguishable from "model too slow".
+    // Surface undici's cause code (ECONNREFUSED, UND_ERR_CONNECT_TIMEOUT...):
+    // without it "host down" is indistinguishable from "model too slow".
     const cause = (err as { cause?: { code?: string; message?: string } })?.cause;
     const detail = cause?.code ?? cause?.message ?? (err as Error)?.message;
-    throw AppError.providerError(
-      PROVIDER,
-      `Could not reach the AI endpoint at ${config.ai.baseUrl}` +
-        `${detail ? ` (${detail})` : ''}. Is the host up and reachable?`,
-      err,
-    );
+    throw new TargetFailure(`could not connect to ${target.baseUrl}${detail ? ` (${detail})` : ''}`, 0);
   } finally {
     clearTimeout(timer);
+    if (headersTimer) clearTimeout(headersTimer);
   }
+}
 
+/**
+ * Turn a raw reply into the requested shape, or say precisely why not.
+ *
+ * Any `length` finish means the budget ran out mid-generation, whether or not
+ * some content made it through — reported as such rather than surfacing as
+ * "invalid JSON", which would send you looking at the model's formatting when
+ * the problem is the token ceiling.
+ */
+function parseReply<T>(result: StreamResult, spec: JsonSchemaSpec<T>, maxTokens: number, model: string): T {
   // A reasoning model that runs out of budget mid-thought emits reasoning and
-  // no content; fall back to it so the failure can be described precisely
-  // rather than as "no output".
+  // no content; fall back to it so the failure can be described precisely.
   const raw = result.content.trim() || result.reasoning.trim();
+  if (!raw) throw new TargetFailure('no output', null);
 
-  if (!raw) {
-    throw AppError.providerError(PROVIDER, `${config.ai.model} returned no output.`);
-  }
-
-  // Any `length` finish means the budget ran out mid-generation, whether or not
-  // some content made it through. Previously this only fired on an empty reply,
-  // so a truncated one fell through to the JSON parser and surfaced as "did not
-  // return valid JSON" — which sends you looking at the model's formatting when
-  // the actual problem is the token ceiling.
   if (result.finishReason === 'length') {
-    throw AppError.providerError(
-      PROVIDER,
+    throw new TargetFailure(
       result.content.trim()
-        ? `${config.ai.model} hit the ${maxTokens}-token limit part-way through, so the ` +
-          `reply was cut off mid-JSON. Raise AI_MAX_TOKENS — a ranking over many assets needs ` +
-          `more room than a single insight.`
-        : `${config.ai.model} hit the ${maxTokens}-token limit before producing an answer. ` +
-          `Raise AI_MAX_TOKENS, or set AI_REASONING_EFFORT=none so thinking does not consume the budget.`,
+        ? `hit the ${maxTokens}-token limit part-way through, cutting the reply off mid-JSON — raise AI_MAX_TOKENS`
+        : `hit the ${maxTokens}-token limit before answering — raise AI_MAX_TOKENS, or set AI_REASONING_EFFORT=none`,
+      null,
     );
   }
 
-  return validateOutput(spec, extractJson<unknown>(raw));
+  try {
+    return validateOutput(spec, extractJson<unknown>(raw, model), model);
+  } catch (err) {
+    throw new TargetFailure(err instanceof Error ? err.message : 'unusable reply', null);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The call
+// ---------------------------------------------------------------------------
+
+export async function completeWithModel<T>(
+  system: string,
+  user: string,
+  spec: JsonSchemaSpec<T>,
+  options: CompleteOptions = {},
+): Promise<{ data: T; model: string }> {
+  requireConfigured();
+  if (options.gate !== false) await gate();
+  const maxTokens = options.maxTokens ?? config.ai.maxTokens;
+  const timeoutMs = options.timeoutMs ?? config.ai.timeoutMs;
+
+  const messages = [
+    { role: 'system', content: system },
+    // The JSON contract is restated in the prompt because `response_format`
+    // is advisory: a gateway that drops the parameter leaves the model free
+    // to invent its own field names (`rankings` instead of `opportunities`),
+    // which then fails validation and wastes the whole call. Saying it in
+    // the prompt as well costs a few hundred tokens and makes the shape
+    // survive an endpoint that ignores the parameter entirely.
+    {
+      role: 'user',
+      content:
+        `Reply with JSON only — no prose, no markdown fence — matching this schema exactly. ` +
+        `Use these exact top-level key names; do not rename or add keys.\n\n` +
+        JSON.stringify(spec.schema),
+    },
+    { role: 'user', content: user },
+  ];
+
+  const bodyFor = (target: Target): Record<string, unknown> => ({
+    model: target.model,
+    // Gemini's thinking is billed against the same budget as the answer, so
+    // a cap sized for a non-thinking reply would cut it off; it gets room.
+    max_tokens: target.gemini ? Math.max(maxTokens, 4096) : maxTokens,
+    // Deterministic-ish: this is analysis, not creative writing, and low
+    // variance also keeps the JSON well-formed more often.
+    temperature: 0.3,
+    messages,
+    response_format: {
+      type: 'json_schema',
+      json_schema: { name: spec.name, strict: true, schema: spec.schema },
+    },
+    // Tuned for the main endpoint's model; Gemini keeps its own default.
+    ...(!target.gemini && config.ai.reasoningEffort ? { reasoning_effort: config.ai.reasoningEffort } : {}),
+  });
+
+  const tryTarget = async (target: Target): Promise<{ data: T; model: string }> => {
+    const reply = target.gemini
+      ? await callTarget(target, bodyFor(target), Math.min(timeoutMs, GEMINI_ATTEMPT_TIMEOUT_MS), GEMINI_HEADERS_TIMEOUT_MS)
+      : await callTarget(target, bodyFor(target), timeoutMs);
+    return { data: parseReply(reply, spec, maxTokens, target.model), model: target.model };
+  };
+
+  const failures: string[] = [];
+
+  // 1. The main endpoint.
+  if (config.ai.primaryConfigured) {
+    if (isBenched('primary')) {
+      failures.push(`${config.ai.model}: skipped — ${benched.get('primary')?.why}`);
+    } else {
+      try {
+        return await tryTarget({
+          label: config.ai.model,
+          baseUrl: config.ai.baseUrl,
+          apiKey: config.ai.apiKey,
+          model: config.ai.model,
+          gemini: false,
+        });
+      } catch (err) {
+        const failure = err instanceof TargetFailure ? err : new TargetFailure(String(err), null);
+        failures.push(`${config.ai.model}: ${failure.message}`);
+        // An endpoint that cannot be reached, refuses us, or has no such
+        // model will not recover in the next few seconds. A bad reply might,
+        // so it only falls through for this call.
+        if (failure.status !== null) bench('primary', 5 * MINUTE, failure.message);
+      }
+    }
+  }
+
+  // 2. Gemini: each model in turn, each key in turn.
+  const { keys, models, baseUrl } = config.ai.gemini;
+  let attempts = 0;
+  const geminiPass = async (ignoreBench: boolean): Promise<{ data: T; model: string } | null> => {
+    for (const model of models) {
+      if (!ignoreBench && isBenched(`model:${model}`)) continue;
+      for (const [index, key] of keys.entries()) {
+        if (!ignoreBench && (isBenched(`key:${index}`) || isBenched(`model:${model}`))) continue;
+        if (attempts >= MAX_GEMINI_ATTEMPTS) return null;
+        attempts++;
+        const label = `${model} (key ${index + 1})`;
+        try {
+          return await tryTarget({ label, baseUrl, apiKey: key, model, gemini: true });
+        } catch (err) {
+          const failure = err instanceof TargetFailure ? err : new TargetFailure(String(err), null);
+          failures.push(`${label}: ${failure.message}`);
+          const status = failure.status;
+          if (status === 429) {
+            bench(`key:${index}`, quotaBench(failure.detail), 'quota used up');
+            continue; // Same model, next key.
+          }
+          if (status === 401 || status === 403) {
+            bench(`key:${index}`, 60 * MINUTE, 'key rejected');
+            continue;
+          }
+          if (status === 404) bench(`model:${model}`, 6 * 60 * MINUTE, 'model not available');
+          else if (status === 400) bench(`model:${model}`, 10 * MINUTE, 'request rejected by this model');
+          else if (status !== null) bench(`model:${model}`, 5 * MINUTE, 'busy or unreachable');
+          // Model trouble, or an unusable reply: another key for the same
+          // model would most likely fare no better, so try the next model.
+          break;
+        }
+      }
+    }
+    return null;
+  };
+
+  if (keys.length > 0) {
+    const answered = (await geminiPass(false)) ?? (attempts === 0 ? await geminiPass(true) : null);
+    if (answered) return answered;
+  }
+
+  throw AppError.providerError(
+    PROVIDER,
+    failures.length > 0
+      ? `No AI could answer. ${failures.slice(0, 6).join(' · ')}`
+      : 'No AI endpoint is available — set OPENAI_BASE_URL + OPENAI_MODEL, or GEMINI_API_KEYS.',
+  );
+}
+
+/** `completeWithModel` for callers that do not record which model answered. */
+export async function complete<T>(
+  system: string,
+  user: string,
+  spec: JsonSchemaSpec<T>,
+  options: CompleteOptions = {},
+): Promise<T> {
+  return (await completeWithModel(system, user, spec, options)).data;
 }
 
 /**
@@ -376,7 +560,7 @@ export async function complete<T>(
  * error names the keys that came back, which is the fastest way to tell "the
  * endpoint ignored the schema" apart from "one optional field is missing".
  */
-function validateOutput<T>(spec: JsonSchemaSpec<T>, value: unknown): T {
+function validateOutput<T>(spec: JsonSchemaSpec<T>, value: unknown, model: string): T {
   const result = spec.output.safeParse(value);
   if (result.success) return result.data;
 
@@ -391,7 +575,7 @@ function validateOutput<T>(spec: JsonSchemaSpec<T>, value: unknown): T {
 
   throw AppError.providerError(
     PROVIDER,
-    `${config.ai.model} returned JSON that does not match the ${spec.name} schema — ` +
+    `${model} returned JSON that does not match the ${spec.name} schema — ` +
       `the endpoint did not enforce response_format. ` +
       (receivedKeys.length > 0 ? `Top-level keys returned: ${receivedKeys.join(', ')}. ` : '') +
       `First problems: ${issues}. ` +
@@ -405,7 +589,7 @@ function validateOutput<T>(spec: JsonSchemaSpec<T>, value: unknown): T {
  * Handles the three things small models do instead of returning bare JSON:
  * `<think>` preambles, ```json fences, and prose wrapped around the object.
  */
-export function extractJson<T>(text: string): T {
+export function extractJson<T>(text: string, model = config.ai.model): T {
   let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 
   // An unterminated <think> means the model never stopped reasoning.
@@ -432,7 +616,7 @@ export function extractJson<T>(text: string): T {
 
   throw AppError.providerError(
     PROVIDER,
-    `${config.ai.model} did not return valid JSON. First 200 characters: ${cleaned.slice(0, 200)}`,
+    `${model} did not return valid JSON. First 200 characters: ${cleaned.slice(0, 200)}`,
   );
 }
 
@@ -890,7 +1074,7 @@ export async function analyzeAsset(
     formatTechnicals(snapshot.technicals, snapshot.currency),
   ].join('\n');
 
-  const parsed = await complete<
+  const { data: parsed, model } = await completeWithModel<
     Omit<AssetInsight, 'symbol' | 'assetClass' | 'basedOn' | 'generatedAt' | 'model'>
   >(SYSTEM_PROMPT, userContent, {
     name: 'asset_insight',
@@ -917,7 +1101,7 @@ export async function analyzeAsset(
       asOf: snapshot.asOf,
     },
     generatedAt: Date.now(),
-    model: config.ai.model,
+    model,
   };
 }
 
@@ -952,7 +1136,7 @@ export async function reviewPortfolio(input: {
     'Assess concentration, diversification, and whether the mix suits an investor exposed to PKR. Flag any single position large enough to dominate outcomes. Where you suggest rebalancing, give a rationale tied to the numbers above.',
   ].join('\n');
 
-  const parsed = await complete<Omit<PortfolioReview, 'generatedAt' | 'model'>>(
+  const { data: parsed, model } = await completeWithModel<Omit<PortfolioReview, 'generatedAt' | 'model'>>(
     SYSTEM_PROMPT,
     userContent,
     {
@@ -962,7 +1146,7 @@ export async function reviewPortfolio(input: {
     },
   );
 
-  return { ...parsed, generatedAt: Date.now(), model: config.ai.model };
+  return { ...parsed, generatedAt: Date.now(), model };
 }
 
 /** One asset as presented to the ranking prompt. */
@@ -1194,7 +1378,7 @@ export async function rankOpportunities(input: {
   // `assetClass` and `held` are facts the server already knows, so they are
   // filled in below rather than asked for — one less field the model can get
   // wrong, and one less way a hallucinated symbol reaches the client.
-  const parsed = await complete<{
+  const { data: parsed, model } = await completeWithModel<{
     opportunities: Array<
       Omit<
         Opportunity,
@@ -1257,5 +1441,5 @@ export async function rankOpportunities(input: {
       };
     });
 
-  return { opportunities, marketNote: parsed.marketNote, generatedAt: Date.now(), model: config.ai.model };
+  return { opportunities, marketNote: parsed.marketNote, generatedAt: Date.now(), model };
 }

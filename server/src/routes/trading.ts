@@ -674,7 +674,9 @@ export async function tradingRoutes(app: FastifyInstance): Promise<void> {
         skipped,
         aiPending: plans.filter((p) => p.ai.status === 'pending').length,
         generatedAt: Date.now(),
-        model: aiOn ? config.ai.model : null,
+        // Each plan names the model that actually reviewed it; this is the
+        // desk-level label, so it names the setup rather than one model.
+        model: aiOn ? (config.ai.primaryConfigured ? config.ai.model : 'Gemini') : null,
       };
       mark('plan', planStarted);
       mark('total', started);
