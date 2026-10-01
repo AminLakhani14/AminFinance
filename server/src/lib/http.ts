@@ -21,6 +21,13 @@ export interface FetchOptions {
   body?: string;
   /** Provider label used in error messages. */
   provider: string;
+  /**
+   * Hand back a 4xx response instead of throwing, for callers that read the
+   * upstream's own error body. A provider that explains *why* it refused —
+   * Binance's `-2015 … request ip: 1.2.3.4` — is worth more than "HTTP 401".
+   * 429 still throws as rate-limited.
+   */
+  returnClientErrors?: boolean;
 }
 
 const RETRYABLE_STATUS = new Set([500, 502, 503, 504, 522, 524]);
@@ -82,6 +89,8 @@ export async function httpGet(url: string, options: FetchOptions): Promise<Respo
       const retryAfter = Number(res.headers.get('retry-after') ?? 60);
       throw AppError.rateLimited(options.provider, Number.isFinite(retryAfter) ? retryAfter : 60);
     }
+
+    if (options.returnClientErrors && res.status >= 400 && res.status < 500) return res;
 
     if (RETRYABLE_STATUS.has(res.status) && attempt < retries) {
       await sleep(300 * 2 ** attempt);

@@ -279,27 +279,60 @@ async function signedGet<T>(path: string, params: Record<string, string | number
     // Never retry a signed request blindly — the timestamp would be stale and
     // a retried order-adjacent call is not something to do automatically.
     retries: 0,
-  }).catch((err: unknown) => {
-    throw err;
+    // Binance explains a refusal in the body; "HTTP 401" alone says nothing
+    // about whether to fix the key, its permissions, or its IP whitelist.
+    returnClientErrors: true,
   });
 
-  const body = (await res.json()) as T & { code?: number; msg?: string };
-  if (typeof body?.code === 'number' && body.code < 0) {
-    if (body.code === -1021) {
+  // An IP ban (418) or blocked region (451) can come back as an HTML page or
+  // an empty body, so the body is read defensively.
+  const text = await res.text();
+  let body: (T & { code?: number; msg?: string }) | null = null;
+  try {
+    body = JSON.parse(text) as T & { code?: number; msg?: string };
+  } catch {
+    body = null;
+  }
+
+  if (res.status === 418 || res.status === 451 || res.status === 403) {
+    throw AppError.providerError(
+      PROVIDER,
+      `Binance refuses this server's network address (HTTP ${res.status}), so balances and trades cannot be read from here. ` +
+        `Run the server where Binance accepts it — locally works — to sync the account.`,
+    );
+  }
+
+  const code = typeof body?.code === 'number' ? body.code : null;
+  if (!res.ok || (code !== null && code < 0)) {
+    // Binance names the address it saw, e.g. "… request ip: 203.0.113.7".
+    const seenIp = /request ip:\s*([0-9a-f.:]+)/i.exec(body?.msg ?? '')?.[1] ?? null;
+    if (code === -1021) {
       throw AppError.providerError(
         PROVIDER,
         'Binance rejected the request timestamp (clock skew). The server re-syncs automatically — retry in a moment.',
       );
     }
-    if (body.code === -2015 || body.code === -2014) {
+    if (code === -2015 || code === -2014 || code === -2008) {
       throw AppError.providerError(
         PROVIDER,
-        'Binance rejected the API key. Check it is valid, has "Enable Reading", and that this IP is whitelisted.',
+        `Binance rejected the API key${seenIp ? ` from ${seenIp}` : ''}. ` +
+          (seenIp
+            ? `If the key has an IP whitelist, add ${seenIp} to it in Binance → API Management. Otherwise check BINANCE_API_KEY and BINANCE_API_SECRET on the server, and that the key has "Enable Reading".`
+            : 'Check BINANCE_API_KEY and BINANCE_API_SECRET on the server, that the key has "Enable Reading", and that its IP whitelist includes this server.'),
       );
     }
-    throw AppError.providerError(PROVIDER, `Binance error ${body.code}: ${body.msg ?? 'unknown'}`);
+    if (code === -1022) {
+      throw AppError.providerError(
+        PROVIDER,
+        'Binance rejected the request signature — BINANCE_API_SECRET on the server does not belong to BINANCE_API_KEY.',
+      );
+    }
+    throw AppError.providerError(
+      PROVIDER,
+      `Binance error ${code ?? `HTTP ${res.status}`}: ${body?.msg ?? (text.slice(0, 160) || 'no detail given')}`,
+    );
   }
-  return body;
+  return body as T;
 }
 
 interface RawAccount {
