@@ -1,0 +1,89 @@
+diff --git a/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewClient.java b/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewClient.java
+index 0287e1c..4893c43 100644
+--- a/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewClient.java
++++ b/node_modules/react-native-webview/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewClient.java
+@@ -49,6 +49,84 @@ public class RNCWebViewClient extends WebViewClient {
+         basicAuthCredential = credential;
+     }
+ 
++    // --- AminFinance: the bundled web app, served from the APK -----------------
++    //
++    // Requests to http://localhost:5173/* are answered from the APK's
++    // assets/www folder: the frontend loads with no server process and no
++    // network, from an origin that is a secure context (localhost, so
++    // crypto.randomUUID and IndexedDB work) and that the backend's CORS list
++    // already allows. A path with no file extension falls back to index.html,
++    // so client-side routes survive a reload exactly as they do behind a web
++    // host's single-page-app rewrite.
++    private static final String APP_HOST = "localhost";
++    private static final int APP_PORT = 5173;
++    private static final String APP_ASSET_ROOT = "www";
++
++    @Override
++    public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
++        android.net.Uri uri = request.getUrl();
++        if (uri == null || !"http".equals(uri.getScheme()) || !APP_HOST.equals(uri.getHost()) || uri.getPort() != APP_PORT) {
++            return super.shouldInterceptRequest(view, request);
++        }
++
++        String path = uri.getPath();
++        if (path == null || path.isEmpty() || path.equals("/")) path = "/index.html";
++        android.content.res.AssetManager assets = view.getContext().getAssets();
++        try {
++            return appAssetResponse(assets.open(APP_ASSET_ROOT + path), path);
++        } catch (java.io.IOException missing) {
++            String lastSegment = path.substring(path.lastIndexOf('/') + 1);
++            if (!lastSegment.contains(".")) {
++                try {
++                    return appAssetResponse(assets.open(APP_ASSET_ROOT + "/index.html"), "/index.html");
++                } catch (java.io.IOException ignored) {
++                    // Falls through to the 404 below.
++                }
++            }
++            WebResourceResponse notFound = new WebResourceResponse(
++                "text/plain", "UTF-8", new java.io.ByteArrayInputStream(new byte[0]));
++            notFound.setStatusCodeAndReasonPhrase(404, "Not Found");
++            return notFound;
++        }
++    }
++
++    private static WebResourceResponse appAssetResponse(java.io.InputStream stream, String path) {
++        String mime = appMimeType(path);
++        boolean textual = mime.startsWith("text/") || mime.endsWith("javascript")
++            || mime.endsWith("json") || mime.endsWith("xml");
++        WebResourceResponse response = new WebResourceResponse(mime, textual ? "UTF-8" : null, stream);
++        java.util.Map<String, String> headers = new java.util.HashMap<>();
++        // index.html must never be served stale after an app update; the
++        // hashed bundles beside it change name whenever they change content.
++        headers.put("Cache-Control", path.endsWith(".html") ? "no-cache" : "max-age=31536000, immutable");
++        response.setResponseHeaders(headers);
++        return response;
++    }
++
++    private static String appMimeType(String path) {
++        String ext = path.substring(path.lastIndexOf('.') + 1).toLowerCase(java.util.Locale.ROOT);
++        switch (ext) {
++            case "html": return "text/html";
++            case "js": case "mjs": return "text/javascript";
++            case "css": return "text/css";
++            case "json": case "webmanifest": return "application/json";
++            case "svg": return "image/svg+xml";
++            case "png": return "image/png";
++            case "jpg": case "jpeg": return "image/jpeg";
++            case "webp": return "image/webp";
++            case "gif": return "image/gif";
++            case "ico": return "image/x-icon";
++            case "woff": return "font/woff";
++            case "woff2": return "font/woff2";
++            case "ttf": return "font/ttf";
++            case "mp4": return "video/mp4";
++            case "txt": return "text/plain";
++            case "wasm": return "application/wasm";
++            default: return "application/octet-stream";
++        }
++    }
++    // --- end AminFinance ------------------------------------------------------
++
+     @Override
+     public void onPageFinished(WebView webView, String url) {
+         super.onPageFinished(webView, url);

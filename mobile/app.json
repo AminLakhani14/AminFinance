@@ -1,0 +1,42 @@
+{
+  "expo": {
+    "name": "AminFinance",
+    "slug": "aminfinance",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0a0b1e",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.aminfinance.app"
+    },
+    "android": {
+      "package": "com.aminfinance.app",
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "backgroundColor": "#12469A",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-sharing",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 120,
+          "resizeMode": "contain",
+          "backgroundColor": "#0a0b1e"
+        }
+      ],
+      "./plugins/withAminFinance"
+    ]
+  }
+}
